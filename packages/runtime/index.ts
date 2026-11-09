@@ -39,11 +39,17 @@ function updateGamepad() {
 
 const gameplayApi = {
   setStick(index: number, x: number, y: number) {
+    if (index < 0 || index > gamepadAxes.length / 2) {
+      throw new Error("Stick index out of bounds");
+    }
     gamepadAxes[index * 2] = x;
     gamepadAxes[index * 2 + 1] = y;
     updateGamepad();
   },
   setButton(index: number, value: number) {
+    if (index < 0 || index >= gamepadButtons.length) {
+      throw new Error("Button index out of bounds");
+    }
     const b = gamepadButtons[index];
     (b.value as number) = value;
     (b.pressed as boolean) = value > 0;

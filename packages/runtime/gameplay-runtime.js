@@ -4,7 +4,7 @@
   var gamepadButtons = Array.from({ length: 17 }, () => ({
     value: 0,
     pressed: false,
-    touched: false,
+    touched: false
   }));
   var simGamepad = {
     id: "Gameplay - SimGamepad",
@@ -14,7 +14,7 @@
     axes: gamepadAxes,
     buttons: gamepadButtons,
     vibrationActuator: undefined,
-    mapping: "standard",
+    mapping: "standard"
   };
   var realGetGamepads = navigator.getGamepads;
   function hookGetGamepads() {
@@ -32,11 +32,17 @@
   }
   var gameplayApi = {
     setStick(index, x, y) {
+      if (index < 0 || index > gamepadAxes.length / 2) {
+        throw new Error("Stick index out of bounds");
+      }
       gamepadAxes[index * 2] = x;
       gamepadAxes[index * 2 + 1] = y;
       updateGamepad();
     },
     setButton(index, value) {
+      if (index < 0 || index >= gamepadButtons.length) {
+        throw new Error("Button index out of bounds");
+      }
       const b = gamepadButtons[index];
       b.value = value;
       b.pressed = value > 0;
@@ -46,7 +52,7 @@
       await new Promise((resolve) => {
         setTimeout(resolve, ms);
       });
-    },
+    }
   };
   window["gameplayApi"] = gameplayApi;
 })();
