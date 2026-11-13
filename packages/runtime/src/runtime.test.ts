@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { BTN, createGamepadController } from "./gamepad";
-import { analyzeRgbaFrame, createInitialRoadModel } from "./vision";
-import { computePidSteer } from "./controller";
+import { analyzeRgbaFrame, createInitialRoadModel, type VideoCaptureEngine } from "./vision";
+import { computePidSteer, createGameplayOrchestrator } from "./controller";
 
 function createMockBrowserEnv(readyState: DocumentReadyState = "complete") {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
@@ -87,6 +87,74 @@ describe("gamepad controller", () => {
     expect(gp.getState().axes[1]).toBeCloseTo(0.2, 4);
 
     gp.resetAll();
+    expect(gp.getState().axes).toEqual([0, 0, 0, 0]);
+    expect(gp.getState().buttons.every((v) => v === 0)).toBe(true);
+    expect(gp.BTN).toBe(BTN);
+  });
+
+  test("runChunk exposes api.BTN, unpauses before holding gas, and resets on error", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
+    const snapshots: number[][] = [];
+    mockWindow.setTimeout = ((cb: TimerHandler, _ms?: number) => {
+      const pad = mockNav.getGamepads()[0];
+      if (pad) {
+        const pressed = pad.buttons
+          .map((b, i) => (b.pressed ? i : -1))
+          .filter((i) => i >= 0);
+        if (pressed.length > 0) snapshots.push(pressed);
+      }
+      return globalThis.setTimeout(cb, 2);
+    }) as unknown as typeof window.setTimeout;
+
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+
+    (globalThis as unknown as { window: unknown }).window = {
+      setInterval: globalThis.setInterval.bind(globalThis),
+      clearInterval: globalThis.clearInterval.bind(globalThis),
+    };
+
+    const fakeCapture = {
+      resetTracking() {},
+      findVideoSurface: () => null,
+    } as unknown as VideoCaptureEngine;
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture);
+
+    const okRes = await orch.runChunk(
+      async ({ api }) => {
+        api.setButton(api.BTN.RB, 1);
+        await api.sleep(10);
+        api.setButton(api.BTN.RB, 0);
+      },
+      {
+        holdGasButton: gp.BTN.Y,
+        unpauseSettleMs: 10,
+        pauseSettleMs: 10,
+        showSheetOverlay: false,
+      },
+    );
+
+    expect(okRes.ok).toBe(true);
+    // 1) Unpause BTN.A (0) held alone BEFORE gas BTN.Y (3)
+    expect(snapshots[0]).toEqual([BTN.A]);
+    // 2) Gas BTN.Y (3) + callback BTN.RB (5) held together during active body
+    expect(snapshots).toContainEqual([BTN.Y, BTN.RB]);
+    // 3) Pause BTN.START (9) tapped during finally cleanup
+    expect(snapshots.some((s) => s.includes(BTN.START))).toBe(true);
+    expect(gp.getState().buttons.every((v) => v === 0)).toBe(true);
+
+    // Even if callback throws while holding brake/stick, finally resets everything
+    const errRes = await orch.runChunk(
+      async ({ api }) => {
+        api.setButton(api.BTN.X, 1);
+        api.setStick(0, -0.9, 0);
+        throw new Error("boom");
+      },
+      { unpause: false, pause: false, showSheetOverlay: false },
+    );
+
+    expect(errRes.ok).toBe(false);
+    expect(errRes.stopReason).toBe("error");
     expect(gp.getState().axes).toEqual([0, 0, 0, 0]);
     expect(gp.getState().buttons.every((v) => v === 0)).toBe(true);
   });

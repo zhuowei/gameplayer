@@ -1,0 +1,44 @@
+# Gameplay Agent Workspace Guidelines (`AGENTS.md`)
+
+## Black-Box Constraint
+- Treat every target game strictly as an unmodified black box:
+  - **Inputs**: Virtual controller state (`navigator.getGamepads()` via `window.gameplayApi`) or hardware/stream controller packets.
+  - **Outputs**: Rendered video frames (`<canvas>` / `<video>`) and audio.
+- Never patch game binaries, read game memory, or query internal engine state.
+
+## Repository Structure & Commands
+- `packages/runtime/`: Injected browser runtime (`window.gameplayApi`) providing virtual Xbox-layout gamepad control, 30 Hz pixel servoing (`driveServo`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), and annotated 4×2 contact-sheet overlays.
+- `packages/browsertool/`: Zero-dependency Bun CLI for raw Chrome DevTools Protocol (`ws://127.0.0.1:9222`) when running outside network-isolated sandboxes.
+- `skills/gameplay/`: Progressive-disclosure gameplay skill ([SKILL.md](skills/gameplay/SKILL.md)) and game-specific runbooks ([supertuxkart.md](skills/gameplay/references/supertuxkart.md)).
+- `docs/lessons-learned.md`: Empirical post-mortem across three SuperTuxKart runs, CV/control failure analyses, and generalization roadmap.
+
+Build and test inside the standard sandbox before committing:
+```sh
+bun run build
+bun test
+```
+
+## Antigravity Sandbox & Browser Tooling Rules
+1. **Prefer `chrome-devtools` MCP inside Antigravity**:
+   - MCP tools (`list_pages`, `evaluate_script`, `take_screenshot`) work inside the standard sandbox without `BypassSandbox: true`.
+   - `packages/browsertool` connects to `127.0.0.1:9222` over WebSocket, which is blocked in network-isolated sandboxes unless `BypassSandbox: true` is used.
+2. **Inline runtime injection & screenshot paths**:
+   - In `chrome-devtools` MCP `evaluate_script`, pass the compiled bundle (`packages/runtime/gameplay-runtime.js` or a minified build) inline via `function` with `format: "script"`. Avoid `sourcePath` and `take_screenshot` `filePath` when MCP `workspaceRoots` is unconfigured; read the auto-saved screenshot path returned by `take_screenshot`.
+3. **Never use `screencast_start` + `ffmpeg` slow-motion loops for turn-by-turn control**:
+   - Recording `.mp4` chunks and re-encoding via `ffmpeg` adds 25–75s latency per move and bloats multimodal context. Use `gameplayApi`'s in-canvas contact-sheet overlay + a single JPEG `take_screenshot` (`quality: 85`).
+
+## Critical Control, Vision & Testing Invariants
+1. **State cleanup in `try / finally`**:
+   - Every multi-step input sequence must pause (when operating pause-bounded) and call `resetAll()` inside `finally` so runtime exceptions never leave throttle, brake, or drift buttons latched.
+2. **Capture HUD / minimap crops *before* pausing**:
+   - Many games (including SuperTuxKart) hide or occlude the HUD/minimap as soon as the Pause overlay opens. Any `FINAL MINIMAP` or `FINAL HUD` crop must come from the last *unpaused* active frame, never from the post-pause surface.
+3. **Verify pause-menu button edge semantics**:
+   - Do not assume holding throttle *before* dismissing a pause menu preserves momentum; SuperTuxKart ignores pre-held throttle (`BTN.Y`) until a fresh press occurs *after* `BTN.A` closes the pause dialog (`>= 220ms` settle).
+4. **Guard pixel heuristics against false-high confidence & self-poisoning**:
+   - Never rely on permissive RGB similarity or unthresholded column centroids (`w = s^2`) without negative-class tests (e.g., sand shoulders, sunlit rock/plaster walls, player sprite occlusion).
+   - Never adapt an online road-color EMA blindly when off-center or low-confidence, or the model will learn that off-road terrain *is* the road.
+   - Couple steering demand to speed/throttle modulation on tight curves (`>= 60°`); full-throttle turning radii exceed narrow corners in most racing games.
+5. **Test documented snippets verbatim**:
+   - Whenever adding or editing code examples in `skills/gameplay/SKILL.md`, add or update a test in `packages/runtime/src/runtime.test.ts` that exercises the exact callback/API shape (e.g., `ctx.api.BTN`) so documentation/code drift fails `bun test`.
+6. **Evaluate driving quality, not just completion**:
+   - Track **off-road excursions** and **`smartRescue()` / auto-rescue counts** alongside wall-clock time and step count. Treating rescue teleports as routine navigation masks control bugs; a healthy SuperTuxKart tutorial lap should require **0–1 rescues**.

@@ -1,51 +1,100 @@
 ---
 name: gameplay
-description: Hierarchical two-loop + contact-sheet workflow for playing unmodified video games in Chrome streaming clients (MoonlightWeb, Xbox Cloud/Remote Play) via virtual gamepad and pixel-only observation.
+description: >-
+  Use this skill when playing or testing unmodified video games streamed in Chrome
+  (such as MoonlightWeb, SuperTuxKart, or Xbox Cloud/Remote Play) using virtual
+  controller inputs (window.gameplayApi) and rendered video pixels.
 ---
 
-# Gameplay Agent Skill (System 1 Servo + System 2 Contact Sheets)
+# Gameplay Agent Skill (Two-Loop Servo + Contact Sheets)
 
-Play games strictly through rendered video pixels (`<canvas>` / `<video>`) and virtual controller inputs (`window.gameplayApi`)—never modifying the game.
+Play games strictly through rendered video pixels (`<canvas>` / `<video>`) and virtual controller inputs (`window.gameplayApi`)—never modifying game files or reading engine internals.
 
-## Core Architecture: Two-Loop Control
+For game-specific bindings, track hazards, and empirical post-mortems, load on demand:
+- **SuperTuxKart controls, pause quirks & tutorial track guide**: [references/supertuxkart.md](./references/supertuxkart.md)
+- **Cross-game architecture & failure lessons**: [docs/lessons-learned.md](../../docs/lessons-learned.md)
 
-Instead of driving frame-by-frame through slow open-loop sleeps or `screencast_start` + `ffmpeg` video transcodes:
+---
 
-1. **Inject `gameplay-runtime.js` once per page navigation:**
-   - Via `chrome-devtools` MCP (`evaluate_script`): pass the contents of `/Users/zhuowei/Documents/antigravity/gameplay/packages/runtime/gameplay-runtime.js` (or its `--minify` build) inline as `function` with `format: "script"` (note: `sourcePath` may fail if MCP `workspaceRoots` is unconfigured).
-   - Or via CLI: `bun run packages/browsertool/index.ts inject --match https://jane.local` (requires CDP port 9222).
-   - Verify with `() => Boolean(window.gameplayApi)`.
+## 1. Inject & Verify `window.gameplayApi`
 
-2. **Start / Menus (Manual UI Calibration First):**
-   - For menus, use `gameplayApi.hideOverlay()`, `gameplayApi.tapButton(idx)`, or `gameplayApi.setStick(0, x, y)` + `take_screenshot` (`format: "jpeg"`, `quality: 85`) + `read_file`.
-   - Confirm whether the game menu uses Left Stick (`setStick(0, x, y)`) or D-pad (`BTN.DPAD_*`), and verify your Pause (`BTN.START = 9`), Unpause (`BTN.A = 0`), and Rescue (`BTN.BACK = 8`) buttons.
-   - Note: `BTN` mapping is Xbox/Standard (`A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, START: 9`). In SuperTuxKart: `Y (3)` = Accelerate, `X (2)` = Brake/Reverse, `B (1)` = Fire Item, `LB (4)` = Nitro, `RB (5)` = Drift/Skid, `BACK (8)` = Rescue, `START (9)` = Pause.
-
-3. **System 1 — Fast Local Visual Servo (`driveServo`) for Track & Path Following:**
-   - On straights and visible curves, call:
+1. **Find target page**: Call `chrome-devtools` MCP `list_pages` to get `pageId`.
+2. **Inject runtime inline** (once per page load):
+   - Minify or read `packages/runtime/gameplay-runtime.js` and pass its text inline to `evaluate_script` with `format: "script"` (avoid `sourcePath`, which fails if MCP `workspaceRoots` is not configured).
+   - Verify injection and video surface detection:
      ```js
-     async () => await gameplayApi.driveServo({ maxDurationMs: 2800, label: "seg-1" })
+     () => ({
+       hasApi: Boolean(window.gameplayApi),
+       frame: window.gameplayApi?.inspectFrame(),
+     })
      ```
-   - `driveServo` runs a **30 Hz pixel road-follower** with continuous throttle (held across unpause/pause), displays an **annotated 4×2 contact sheet + zoomed `FINAL MINIMAP` & `FINAL HUD / PROMPT` strip**, and auto-pauses early if `stuck`, `red_alert` (`WRONG WAY!`), or `low_confidence` occurs.
-   - Pass `unpause: false` ONLY on the very first move after race start if the game is not yet paused; afterwards leave `unpause: true, pause: true` (default).
-   - Use `steerBias` (e.g., `-0.2` left, `+0.2` right) to nudge lane preference when hugging an inside curve or picking up items/nitro bottles.
 
-4. **System 2 — Deliberative Scripted Chunks (`runChunk`) for Special Actions:**
-   - For sharp blind turns, firing items (`BTN.B`) at crates, activating nitro (`BTN.LB`), drifting (`BTN.RB`), or backing up cleanly, wrap inputs in `runChunk`:
-     ```js
-     async () => await gameplayApi.runChunk(async ({ api, shouldAbort }) => {
-       await api.tapButton(api.BTN.B, 120, 150); // fire bowling ball
-       await api.rampStick(0, -0.5, 0, 150);
-       await api.sleep(700);
-       await api.rampStick(0, 0, 0, 120);
-     }, { holdGasButton: gameplayApi.BTN.Y, label: "clear-crates" })
-     ```
-   - `runChunk` guarantees `try/finally` button reset after pausing and shows the exact annotated contact sheet + motion `%` + stick vectors in a single `take_screenshot`.
+---
 
-5. **Inspecting After Each Step (1 Screenshot, Zero `ffmpeg`):**
-   - Call `take_screenshot` (`format: "jpeg"`, `quality: 85`) and `read_file` on the saved image path.
-   - Check the header telemetry (`stop=`, `avgΔ=`, `roadConf=`), the **cyan diamond** road target on each tile, the **yellow stick vector** corner indicator, and the **zoomed `FINAL MINIMAP` + `FINAL HUD / PROMPT`** strip at the bottom.
+## 2. Pre-Flight Calibration (Before Starting Gameplay)
 
-6. **Recovery Rules (Avoid Multi-Turn Loops):**
-   - If `stopReason === "stuck"` or `"red_alert"`, or you are off-track / backwards, **do NOT spend >1 turn doing blind multi-point turns**—call `await gameplayApi.smartRescue()` immediately, or reverse straight (`BTN.X`, stick `(0, 0)`) first before turning!
-   - Always trust the zoomed `FINAL MINIMAP` over blind hill crests.
+Before entering real-time action, verify four behaviors using `hideOverlay()` + single JPEG screenshots (`format: "jpeg"`, `quality: 85`, omitting `filePath`):
+1. **Menu navigation**: Test whether menus respond better to discrete `BTN.DPAD_*` taps (`tapButton(BTN.DPAD_DOWN, 90, 180)`) or short Left Stick pulses (`setStick(0, x, y)` for `120–160ms`, then `(0, 0)`).
+2. **Pause & Unpause buttons**: Confirm which button opens Pause (usually `BTN.START = 9`) and which resumes (`BTN.A = 0` or `BTN.START = 9`), and check whether the Pause overlay hides the HUD/minimap.
+3. **Edge-triggered inputs across Pause**: Verify whether holding throttle across unpause works or is ignored until re-pressed *after* the pause dialog closes (e.g., SuperTuxKart requires unpausing first, waiting `~220ms`, then pressing gas).
+4. **Overloaded buttons**: Note buttons whose meaning flips between paused and unpaused states (e.g., in SuperTuxKart `BTN.A` confirms/unpauses in menus, but **looks behind** during live driving).
+
+---
+
+## 3. Two-Loop Control Protocol
+
+### A. System 1 — `driveServo()` (Straights & Gentle Visible Curves Only)
+Use `driveServo` for clean straights and mild bends where road contrast is clear:
+```js
+async () => await window.gameplayApi.driveServo({
+  maxDurationMs: 2200,
+  steerBias: 0,
+  label: "seg-straight",
+})
+```
+- Pass `unpause: false` **only** when the game is already unpaused (such as the initial `Ready!` countdown).
+- **Current `driveServo` limitations to respect** (until `vision.ts` v3 lands):
+  - **Low-contrast terrain trap**: On desert/canyon tracks where sand shoulders or beige rock walls share warm luminance with dirt roads, `avgRoadConfidence` can read `85–97%` even while drifting off-road, and column-centroid dilution keeps steering gentle (`|meanSteerX| < 0.2`).
+  - **Full-throttle understeer**: `driveServo` holds full throttle (`BTN.Y = 1`), which cannot make `>= 60°` hairpins without running wide.
+  - **Mitigation**: Keep `maxDurationMs` modest (`1800–2500ms`) when approaching bends or blind crests, and **switch to `runChunk` *before* sharp corners** rather than waiting for `driveServo` to run off-track.
+
+### B. System 2 — `runChunk()` (Sharp Corners, Blind Crests, Mechanics & Recoveries)
+Use `runChunk` whenever executing `>= 60°` turns (modulating gas or drifting), firing items, using nitro, cresting blind hills, or rejoining the road from a shoulder:
+```js
+async () => await window.gameplayApi.runChunk(async ({ api }) => {
+  // Ease gas briefly or engage drift to tighten turn radius on sharp corners
+  await api.rampStick(0, -0.7, 0, 100);
+  api.setButton(api.BTN.RB, 1); // optional drift/skid in STK
+  await api.sleep(900);
+  api.setButton(api.BTN.RB, 0);
+  await api.rampStick(0, 0, 0, 120);
+  await api.sleep(350);
+}, { holdGasButton: window.gameplayApi.BTN.Y, label: "seg-sharp-left" })
+```
+- `runChunk` wraps your callback in `try / finally`, guaranteeing pause + `resetAll()` even on error.
+
+---
+
+## 4. Reading Contact Sheets & Spatial Orientation Rules
+
+After each `driveServo` or `runChunk`, call `take_screenshot` (`format: "jpeg"`, `quality: 85`) and `read_file`:
+
+1. **Check actual motion, not just `roadConf`**:
+   - Red `+Tms Δ0.0%` badges or `stop=stuck` mean the vehicle is stopped or wedged even if `roadConf > 90%`.
+2. **Watch for post-pause HUD occlusion**:
+   - If the game hides its minimap when paused (e.g., SuperTuxKart replaces `FINAL MINIMAP` with `Exit Race`), read the minimap inside the **last active tile** (`tile 7` / `tile 8` in the 4×2 grid), not the post-pause bottom-left crop.
+3. **Never confuse North-Up Minimap Left/Right with Kart Left/Right**:
+   - On a static north-up minimap, **moving downward (south) flips left and right**: a road bending toward the *left* edge of the minimap is a **right turn (`+X`)** from the driver's seat, and a bend toward the *right* edge of the minimap is a **left turn (`-X`)**.
+   - Always determine your heading vector from dot movement across tiles first, and **prioritize 3D viewport cues** (`<<<` / `>>>` wall chevrons, road curb tangents) whenever visible.
+
+---
+
+## 5. Recovery Discipline (Do Not Crutch on `smartRescue`)
+
+Treat rescues (`smartRescue()` / `BTN.BACK`) as an **emergency recovery**, not a routine cornering tool:
+
+- **Minor shoulder drift (1–3m off-road, road clearly visible beside you, no wall blocking)**:
+  - Recover via `runChunk`: release full throttle briefly or pulse gas while steering `0.4–0.6` back onto the road surface, then counter-steer straight upon re-entry.
+- **True stuck / irrecoverable state (wedged against wall/fence, fallen off ledge, `WRONG WAY!`, or backwards)**:
+  - Do **not** chain blind multi-point reverse turns. Either back straight out (`BTN.X` with stick `(0, 0)` for `600–800ms`) before steering forward, or call `await window.gameplayApi.smartRescue({ label: "rescue" })`.
+- **Track your rescue count**: Report total manual + automatic rescues at the end of a run. A clean playthrough should require **0–1 rescues**; repeated rescues indicate you entered corners too fast or misread turn direction.
