@@ -178,6 +178,9 @@ export function createGameplayOrchestrator(
     hideSheetOverlay();
     const eng = getEngine();
     eng.resetTracking();
+    if (!unpause && typeof eng.resetRoadModel === "function") {
+      eng.resetRoadModel();
+    }
     const surface = eng.findVideoSurface();
     const samples: FrameSample[] = [];
     let aborted = false;
@@ -217,6 +220,7 @@ export function createGameplayOrchestrator(
     let timerId: number | undefined;
     let errMsg: string | undefined;
     let ok = true;
+    let prePauseSurface: HTMLCanvasElement | null = null;
 
     try {
       // Unpause first so STK registers a fresh rising edge on gas after closing the pause menu
@@ -243,6 +247,14 @@ export function createGameplayOrchestrator(
       errMsg = err instanceof Error ? err.message : String(err);
     } finally {
       if (timerId !== undefined) window.clearInterval(timerId);
+      // Snapshot unpaused video surface BEFORE pause overlay hides HUD/minimap
+      if (surface && typeof eng.captureFullFrame === "function") {
+        try {
+          prePauseSurface = eng.captureFullFrame(surface);
+        } catch {
+          // ignore snapshot error
+        }
+      }
       if (pause) {
         try {
           await gamepad.tapButton(pauseButton, 90, pauseSettleMs);
@@ -265,7 +277,7 @@ export function createGameplayOrchestrator(
       ok,
       errMsg,
       false,
-      surface,
+      prePauseSurface ?? surface,
       options,
     );
   }
@@ -274,16 +286,17 @@ export function createGameplayOrchestrator(
     const {
       maxDurationMs = 3000,
       tickMs = 33,
-      kp = 0.95,
-      kd = 0.22,
-      maxSteer = 0.85,
+      kp = 1.25,
+      kd = 0.25,
+      maxSteer = 0.95,
       gasButton = BTN.Y,
+      throttleModulation = true,
       steerBias = 0,
       stopOnBannerChange = false,
       bannerDeltaThreshold = 0.28,
       stopOnLowConfidence = true,
-      minConfidence = 0.2,
-      lowConfidenceMs = 350,
+      minConfidence = 0.25,
+      lowConfidenceMs = 280,
       stopOnRedAlert = true,
       redAlertThreshold = 0.035,
       unpause = true,
@@ -303,6 +316,9 @@ export function createGameplayOrchestrator(
     hideSheetOverlay();
     const eng = getEngine();
     eng.resetTracking();
+    if (!unpause && typeof eng.resetRoadModel === "function") {
+      eng.resetRoadModel();
+    }
     const surface = eng.findVideoSurface();
     if (!surface) {
       return {
@@ -329,6 +345,7 @@ export function createGameplayOrchestrator(
     let stuckDetected = false;
     let errMsg: string | undefined;
     let ok = true;
+    let prePauseSurface: HTMLCanvasElement | null = null;
 
     const startedAt = performance.now();
 
@@ -344,6 +361,7 @@ export function createGameplayOrchestrator(
       let lastTileAt = -Infinity;
       let lowMotionAcc = 0;
       let lowConfAcc = 0;
+      let tickIndex = 0;
 
       while (true) {
         const now = performance.now();
@@ -365,9 +383,26 @@ export function createGameplayOrchestrator(
           kp,
           kd,
           maxSteer,
+          5.5,
         );
         pidState = pid.nextState;
         gamepad.setStick(0, pid.steer, 0);
+
+        // Curvature-coupled throttle modulation: ease gas duty cycle on tight turns
+        // after initial acceleration settle so the kart tucks into corners instead of understeering wide.
+        if (throttleModulation && elapsed > 380) {
+          const absSteer = Math.abs(pid.steer);
+          if (absSteer > 0.68) {
+            gamepad.setButton(gasButton, tickIndex % 3 === 0 ? 1 : 0);
+          } else if (absSteer > 0.44) {
+            gamepad.setButton(gasButton, tickIndex % 2 === 0 ? 1 : 0);
+          } else {
+            gamepad.setButton(gasButton, 1);
+          }
+        } else {
+          gamepad.setButton(gasButton, 1);
+        }
+        tickIndex++;
 
         const state = gamepad.getState();
         if (now - lastTileAt >= sampleIntervalMs) {
@@ -435,6 +470,14 @@ export function createGameplayOrchestrator(
       stopReason = "error";
       errMsg = err instanceof Error ? err.message : String(err);
     } finally {
+      // Snapshot unpaused video surface BEFORE pause overlay hides HUD/minimap
+      if (surface && typeof eng.captureFullFrame === "function") {
+        try {
+          prePauseSurface = eng.captureFullFrame(surface);
+        } catch {
+          // ignore snapshot error
+        }
+      }
       if (pause) {
         try {
           await gamepad.tapButton(pauseButton, 90, pauseSettleMs);
@@ -457,7 +500,7 @@ export function createGameplayOrchestrator(
       ok,
       errMsg,
       false,
-      surface,
+      prePauseSurface ?? surface,
       options,
     );
   }
@@ -491,7 +534,7 @@ export function createGameplayOrchestrator(
       };
     }
     const dims = eng.getSurfaceDimensions(surface);
-    const analysis = eng.sampleAnalysis(surface);
+    const analysis = eng.sampleAnalysis(surface, false);
     return {
       foundSurface: true,
       width: dims.w,

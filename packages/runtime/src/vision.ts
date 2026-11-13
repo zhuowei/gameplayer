@@ -17,13 +17,41 @@ export interface FrameAnalysis {
 }
 
 export const DEFAULT_STK_CROPS: CropRegion[] = [
-  { label: "MINIMAP", x: 0.0, y: 0.56, w: 0.25, h: 0.42 },
-  { label: "TUTORIAL PROMPT", x: 0.2, y: 0.8, w: 0.6, h: 0.19 },
-  { label: "TOP HUD", x: 0.16, y: 0.02, w: 0.68, h: 0.28 },
+  { label: "MINIMAP", x: 0.0, y: 0.58, w: 0.23, h: 0.41 },
+  { label: "TUTORIAL PROMPT", x: 0.12, y: 0.84, w: 0.76, h: 0.16 },
+  { label: "LOOKAHEAD & ALERT", x: 0.22, y: 0.22, w: 0.56, h: 0.38 },
 ];
 
 export function createInitialRoadModel(): RoadColorModel {
-  return { r: 120, g: 115, b: 110, initialized: false };
+  return { r: 125, g: 118, b: 108, initialized: false };
+}
+
+/**
+ * Penalizes pale yellow/cream desert sand (high luminance, strong yellow excess over blue,
+ * and modest R-G gap) while leaving grey cobblestone, neutral asphalt, dark wood planks,
+ * and rich reddish-brown dirt roads (where R-G >= 35 and lum < 135) untouched.
+ */
+function computeSandPenalty(r: number, g: number, b: number): number {
+  const lum = (r + g + b) / 3;
+  const yellowExcess = (r + g) * 0.5 - b;
+  const rg = r - g;
+  if (lum > 145 && yellowExcess > 28 && rg < 35 && g > 135) {
+    const lumFactor = Math.min(1, (lum - 145) / 25);
+    const yellowFactor = Math.min(1, (yellowExcess - 28) / 22);
+    return 0.95 * Math.max(0.55, lumFactor * yellowFactor);
+  }
+  return 0;
+}
+
+function isCandidateRoadSeedPixel(r: number, g: number, b: number): boolean {
+  const lum = (r + g + b) / 3;
+  if (lum < 28 || lum > 188) return false;
+  const greenExcess = g - Math.max(r, b);
+  if (greenExcess > 12) return false;
+  if (b - r > 20 && lum > 110) return false;
+  if (computeSandPenalty(r, g, b) > 0.15) return false;
+  if (r - g > 68) return false;
+  return true;
 }
 
 /**
@@ -58,15 +86,41 @@ export function analyzeRgbaFrame(
   }
   const motionScore = motionCount > 0 ? motionSum / motionCount : 0;
 
-  // 2. Top-center banner delta & red alert ratio (x: 15%..85%, y: 5%..32%)
+  // 2. Top-center banner delta & alert ratio (pure red banners + outlined red-orange "WRONG WAY!")
   let bannerChanged = 0;
   let bannerPixels = 0;
-  let redAlertPixels = 0;
+  let alertScore = 0;
   {
     const xStart = Math.floor(width * 0.15);
     const xEnd = Math.floor(width * 0.85);
     const yStart = Math.floor(height * 0.05);
-    const yEnd = Math.floor(height * 0.34);
+    const yEnd = Math.floor(height * 0.35);
+    const wwX0 = Math.floor(width * 0.28);
+    const wwX1 = Math.floor(width * 0.72);
+    const wwY0 = Math.floor(height * 0.22);
+
+    const hasDarkOutlineNeighbor = (cx: number, cy: number): boolean => {
+      const offsets: Array<[number, number]> = [
+        [-2, 0],
+        [2, 0],
+        [0, -2],
+        [0, 2],
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+      ];
+      for (const [dx, dy] of offsets) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const nIdx = (ny * width + nx) * 4;
+        const nLum = (rgba[nIdx] + rgba[nIdx + 1] + rgba[nIdx + 2]) / 3;
+        if (nLum < 55) return true;
+      }
+      return false;
+    };
+
     for (let y = yStart; y < yEnd; y += 2) {
       for (let x = xStart; x < xEnd; x += 2) {
         const idx = (y * width + x) * 4;
@@ -74,8 +128,23 @@ export function analyzeRgbaFrame(
         const g = rgba[idx + 1];
         const b = rgba[idx + 2];
         if (r > 175 && r - g > 65 && r - b > 65) {
-          redAlertPixels++;
+          alertScore += 1;
+        } else if (
+          y >= wwY0 &&
+          x >= wwX0 &&
+          x <= wwX1 &&
+          r >= 210 &&
+          g >= 95 &&
+          g <= 185 &&
+          b <= 55 &&
+          r - g >= 30 &&
+          r - b >= 155 &&
+          hasDarkOutlineNeighbor(x, y)
+        ) {
+          // Outlined orange-gold "WRONG WAY!" glyph strokes in SuperTuxKart
+          alertScore += 2.5;
         }
+
         if (prevRgba && prevRgba.length === rgba.length) {
           const lum = 0.299 * r + 0.587 * g + 0.114 * b;
           const prevLum =
@@ -91,58 +160,52 @@ export function analyzeRgbaFrame(
     }
   }
   const bannerDelta = bannerPixels > 0 ? bannerChanged / bannerPixels : 0;
-  const redAlertRatio = bannerPixels > 0 ? redAlertPixels / bannerPixels : 0;
+  const redAlertRatio = bannerPixels > 0 ? Math.min(1, alertScore / bannerPixels) : 0;
 
-  // 3. Seed/update foreground road prototype from immediate ahead zone
-  // Sample two patches flanking center-ahead (y: 62%..70%, x: 35%..43% and 57%..65% plus nose 59%..65%)
+  // 3. Sample unoccluded ground patches flanking player kart wheels + nose lookahead
+  // Avoids player sprite (x: 40%..60%, y: 52%..84%), minimap (x < 24%), and speedometer (x > 76%)
   let seedR = 0;
   let seedG = 0;
   let seedB = 0;
-  let seedCount = 0;
-  {
-    const yStart = Math.floor(height * 0.58);
-    const yEnd = Math.floor(height * 0.67);
-    const xStart = Math.floor(width * 0.38);
-    const xEnd = Math.floor(width * 0.62);
-    for (let y = yStart; y < yEnd; y += 2) {
-      for (let x = xStart; x < xEnd; x += 2) {
+  let seedValid = 0;
+  let seedTotal = 0;
+  const samplePatch = (x0Frac: number, x1Frac: number, y0Frac: number, y1Frac: number) => {
+    const xs = Math.floor(width * x0Frac);
+    const xe = Math.floor(width * x1Frac);
+    const ys = Math.floor(height * y0Frac);
+    const ye = Math.floor(height * y1Frac);
+    for (let y = ys; y < ye; y += 2) {
+      for (let x = xs; x < xe; x += 2) {
+        seedTotal++;
         const idx = (y * width + x) * 4;
         const r = rgba[idx];
         const g = rgba[idx + 1];
         const b = rgba[idx + 2];
-        const greenExcess = g - Math.max(r, b);
-        const lum = (r + g + b) / 3;
-        // Skip obvious neon grass or pitch-black occlusion shadows when seeding road model
-        if (greenExcess < 22 && lum > 25 && lum < 245) {
+        if (isCandidateRoadSeedPixel(r, g, b)) {
           seedR += r;
           seedG += g;
           seedB += b;
-          seedCount++;
+          seedValid++;
         }
       }
     }
+  };
+  samplePatch(0.28, 0.39, 0.64, 0.75);
+  samplePatch(0.61, 0.72, 0.64, 0.75);
+  samplePatch(0.44, 0.56, 0.47, 0.52);
+
+  let evalModel: RoadColorModel = { ...roadModel };
+  if (!evalModel.initialized && seedValid >= 8) {
+    evalModel = {
+      r: seedR / seedValid,
+      g: seedG / seedValid,
+      b: seedB / seedValid,
+      initialized: true,
+    };
   }
 
-  let nextModel = { ...roadModel };
-  if (seedCount >= 8) {
-    const avgR = seedR / seedCount;
-    const avgG = seedG / seedCount;
-    const avgB = seedB / seedCount;
-    if (!nextModel.initialized) {
-      nextModel = { r: avgR, g: avgG, b: avgB, initialized: true };
-    } else {
-      // Gentle EMA adaptation for transitions (stone -> dirt -> wood bridge -> tunnel)
-      const alpha = 0.15;
-      nextModel = {
-        r: nextModel.r * (1 - alpha) + avgR * alpha,
-        g: nextModel.g * (1 - alpha) + avgG * alpha,
-        b: nextModel.b * (1 - alpha) + avgB * alpha,
-        initialized: true,
-      };
-    }
-  }
-
-  // 4. Evaluate navigability across 24 columns in lookahead band (y: 44%..62%)
+  // 4. Evaluate navigability across 24 columns in lookahead band (y: 45%..59%)
+  // with vertical wall continuity check against above-horizon band (y: 20%..28%)
   const numCols = 24;
   const rawColScores = new Float64Array(numCols);
   const lookRows = [
@@ -150,10 +213,14 @@ export function analyzeRgbaFrame(
     Math.floor(height * 0.52),
     Math.floor(height * 0.59),
   ];
+  const upperWallRows = [
+    Math.floor(height * 0.2),
+    Math.floor(height * 0.28),
+  ];
 
-  const refRG = nextModel.r - nextModel.g;
-  const refGB = nextModel.g - nextModel.b;
-  const refLum = (nextModel.r + nextModel.g + nextModel.b) / 3;
+  const refRG = evalModel.r - evalModel.g;
+  const refGB = evalModel.g - evalModel.b;
+  const refLum = (evalModel.r + evalModel.g + evalModel.b) / 3;
 
   const xMargin = Math.floor(width * 0.08);
   const spanW = width - 2 * xMargin;
@@ -164,14 +231,25 @@ export function analyzeRgbaFrame(
     let colScoreSum = 0;
     let colSamples = 0;
 
+    let midR = 0;
+    let midG = 0;
+    let midB = 0;
+    let midCount = 0;
+
     for (let rIdx = 0; rIdx < lookRows.length; rIdx++) {
       const y = lookRows[rIdx];
-      // Weight slightly closer lookahead rows more weakly than mid-horizon to anticipate curves
       for (let x = x0; x < x1; x++) {
         const idx = (y * width + x) * 4;
         const r = rgba[idx];
         const g = rgba[idx + 1];
         const b = rgba[idx + 2];
+
+        if (rIdx < 2) {
+          midR += r;
+          midG += g;
+          midB += b;
+          midCount++;
+        }
 
         const rg = r - g;
         const gb = g - b;
@@ -181,7 +259,6 @@ export function analyzeRgbaFrame(
         const lumDiff = Math.abs(lum - refLum) / 255;
         const colorDist = chromaDiff * 0.68 + lumDiff * 0.32;
 
-        // Horizontal edge gradient (walls/fences/trees tend to have higher local edges)
         const rightIdx = (y * width + Math.min(width - 1, x + 1)) * 4;
         const edge =
           (Math.abs(r - rgba[rightIdx]) +
@@ -189,20 +266,69 @@ export function analyzeRgbaFrame(
             Math.abs(b - rgba[rightIdx + 2])) /
           (3 * 255);
 
-        const greenPenalty = Math.max(0, (g - Math.max(r, b) - 10) / 60);
-        const skyPenalty = rIdx === 0 && b - r > 22 && lum > 130 ? 0.8 : 0;
-        const redWallPenalty = r - g > 65 ? 0.5 : 0;
+        const greenPenalty = Math.max(0, (g - Math.max(r, b) - 10) / 55);
+        const skyPenalty = b - r > 22 && lum > 125 ? 0.85 : 0;
+        const redWallPenalty = r - g > 65 ? 0.55 : 0;
+        const sandPenalty = computeSandPenalty(r, g, b);
+        const glareWallPenalty = lum > 192 ? Math.min(0.75, (lum - 192) / 35) : 0;
 
         const pixelScore = Math.max(
           0,
-          1 - (colorDist * 2.1 + edge * 0.9 + greenPenalty + skyPenalty + redWallPenalty),
+          1 -
+            (colorDist * 2.05 +
+              edge * 0.85 +
+              greenPenalty +
+              skyPenalty +
+              redWallPenalty +
+              sandPenalty +
+              glareWallPenalty),
         );
         colScoreSum += pixelScore;
         colSamples++;
       }
     }
 
-    rawColScores[c] = colSamples > 0 ? colScoreSum / colSamples : 0;
+    // Vertical wall continuity penalty: a close wall extends continuously above the horizon
+    // (y: 20%..28%) with nearly identical color to the lookahead band, unlike open sky,
+    // green hills, or dark wooden tunnel roofs (upperLum < 76).
+    let wallPenalty = 0;
+    if (midCount > 0) {
+      let upR = 0;
+      let upG = 0;
+      let upB = 0;
+      let upCount = 0;
+      for (const uy of upperWallRows) {
+        for (let x = x0; x < x1; x++) {
+          const idx = (uy * width + x) * 4;
+          upR += rgba[idx];
+          upG += rgba[idx + 1];
+          upB += rgba[idx + 2];
+          upCount++;
+        }
+      }
+      if (upCount > 0) {
+        upR /= upCount;
+        upG /= upCount;
+        upB /= upCount;
+        const mR = midR / midCount;
+        const mG = midG / midCount;
+        const mB = midB / midCount;
+        const upLum = (upR + upG + upB) / 3;
+        const upIsSky = upB - upR > 18 && upLum > 105;
+        const upIsFoliage = upG - Math.max(upR, upB) > 12;
+        const upIsDarkCeiling = upLum < 76;
+        if (!upIsSky && !upIsFoliage && !upIsDarkCeiling) {
+          const verticalRgbDiff =
+            (Math.abs(upR - mR) + Math.abs(upG - mG) + Math.abs(upB - mB)) / 3;
+          if (verticalRgbDiff < 26) {
+            wallPenalty = 0.82 * Math.min(1, (26 - verticalRgbDiff) / 14);
+          }
+        }
+      }
+    }
+
+    const baseColScore = colSamples > 0 ? colScoreSum / colSamples : 0;
+    rawColScores[c] = Math.max(0, baseColScore - wallPenalty);
   }
 
   // Smooth column scores [0.25, 0.5, 0.25]
@@ -213,26 +339,64 @@ export function analyzeRgbaFrame(
     colScores[c] = 0.25 * left + 0.5 * rawColScores[c] + 0.25 * right;
   }
 
-  // Weighted centroid of top scoring navigable columns (squared weights sharpen lane peak)
+  // Thresholded centroid: off-road columns below navThreshold=0.45 contribute zero weight
+  // so desert sand or walls never dilute sharp steering offsets toward 0.
+  const navThreshold = 0.45;
   let weightSum = 0;
   let weightedPos = 0;
+  let activeCols = 0;
+  let activeExcessSum = 0;
   let maxColScore = 0;
-  let totalColScore = 0;
 
   for (let c = 0; c < numCols; c++) {
     const s = colScores[c];
-    totalColScore += s;
     if (s > maxColScore) maxColScore = s;
-    const normX = ((c + 0.5) / numCols) * 2 - 1; // [-1 .. +1]
-    // Slightly prefer gentle center continuity unless blocked
-    const w = s * s;
-    weightSum += w;
-    weightedPos += w * normX;
+    const excess = Math.max(0, s - navThreshold);
+    if (excess > 0) {
+      activeCols++;
+      activeExcessSum += excess / (1 - navThreshold);
+      const normX = ((c + 0.5) / numCols) * 2 - 1; // [-1 .. +1]
+      const w = excess * excess;
+      weightSum += w;
+      weightedPos += w * normX;
+    }
   }
 
   const roadOffsetX = weightSum > 1e-4 ? weightedPos / weightSum : 0;
-  const meanScore = totalColScore / numCols;
-  const roadConfidence = Math.min(1, maxColScore * 0.65 + meanScore * 0.55);
+  const widthSupport = Math.min(1, activeCols / 6);
+  const meanActiveStrength = activeCols > 0 ? activeExcessSum / activeCols : 0;
+  const roadConfidence =
+    activeCols === 0
+      ? maxColScore * 0.25
+      : Math.min(1, widthSupport * (0.35 + 0.65 * meanActiveStrength));
+
+  // 5. Anti-self-poisoning road model update:
+  // Only adapt EMA when genuinely on a high-confidence road corridor and reasonably centered.
+  let nextModel = { ...evalModel };
+  const seedValidRatio = seedTotal > 0 ? seedValid / seedTotal : 0;
+  if (
+    seedValid >= 10 &&
+    seedValidRatio >= 0.4 &&
+    roadConfidence >= 0.52 &&
+    Math.abs(roadOffsetX) <= 0.36
+  ) {
+    const avgR = seedR / seedValid;
+    const avgG = seedG / seedValid;
+    const avgB = seedB / seedValid;
+    if (!roadModel.initialized) {
+      nextModel = { r: avgR, g: avgG, b: avgB, initialized: true };
+    } else {
+      const alpha = 0.08;
+      nextModel = {
+        r: roadModel.r * (1 - alpha) + avgR * alpha,
+        g: roadModel.g * (1 - alpha) + avgG * alpha,
+        b: roadModel.b * (1 - alpha) + avgB * alpha,
+        initialized: true,
+      };
+    }
+  } else if (!roadModel.initialized && roadConfidence < 0.52) {
+    nextModel = { ...roadModel };
+  }
 
   return {
     motionScore,
@@ -304,7 +468,10 @@ export class VideoCaptureEngine {
     return { w: el.width, h: el.height };
   }
 
-  sampleAnalysis(surface: HTMLCanvasElement | HTMLVideoElement): FrameAnalysis {
+  sampleAnalysis(
+    surface: HTMLCanvasElement | HTMLVideoElement,
+    mutateModel = true,
+  ): FrameAnalysis {
     this.analysisCtx.drawImage(surface, 0, 0, this.analysisW, this.analysisH);
     const img = this.analysisCtx.getImageData(0, 0, this.analysisW, this.analysisH);
     const rgba = new Uint8ClampedArray(img.data);
@@ -315,9 +482,23 @@ export class VideoCaptureEngine {
       this.analysisH,
       this.roadModel,
     );
-    this.prevAnalysisRgba = rgba;
-    this.roadModel = analysis.updatedRoadModel;
+    if (mutateModel) {
+      this.prevAnalysisRgba = rgba;
+      this.roadModel = analysis.updatedRoadModel;
+    }
     return analysis;
+  }
+
+  captureFullFrame(surface: HTMLCanvasElement | HTMLVideoElement): HTMLCanvasElement | null {
+    const { w, h } = this.getSurfaceDimensions(surface);
+    if (w <= 0 || h <= 0) return null;
+    const snap = document.createElement("canvas");
+    snap.width = w;
+    snap.height = h;
+    const ctx = snap.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(surface, 0, 0, w, h);
+    return snap;
   }
 
   captureTile(
@@ -538,11 +719,13 @@ export function buildContactSheetCanvas(
       const offsetY = stripY + Math.floor((cropH - drawH) / 2);
       ctx.drawImage(finalSurface, sx, sy, sw, sh, offsetX, offsetY, drawW, drawH);
 
+      const pillLabel = `FINAL ${c.label}`;
+      const pillW = Math.min(cropSlotW - 8, Math.ceil(16 + pillLabel.length * 7.6));
       ctx.fillStyle = "rgba(15, 23, 42, 0.8)";
-      ctx.fillRect(dx + 4, stripY + 4, 140, 20);
+      ctx.fillRect(dx + 4, stripY + 4, pillW, 20);
       ctx.fillStyle = "#38bdf8";
       ctx.font = "bold 12px ui-monospace, Menlo, monospace";
-      ctx.fillText(`FINAL ${c.label}`, dx + 10, stripY + 18);
+      ctx.fillText(pillLabel, dx + 10, stripY + 18);
     }
   }
 

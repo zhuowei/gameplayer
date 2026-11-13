@@ -6,9 +6,11 @@ const gamepad = createGamepadController();
 const orchestrator = createGameplayOrchestrator(gamepad);
 
 const gameplayApi = {
+  version: "3.0.0",
   BTN,
   simGamepad: gamepad.simGamepad,
   setStick: gamepad.setStick,
+  pulseStick: gamepad.pulseStick,
   setButton: gamepad.setButton,
   tapButton: gamepad.tapButton,
   rampStick: gamepad.rampStick,
@@ -24,4 +26,4 @@ const gameplayApi = {
 };
 
 (window as unknown as Record<string, unknown>)["gameplayApi"] = gameplayApi;
-console.log("Gameplay - hooked v2 (gamepad + servo + contact-sheet)");
+console.log("Gameplay - hooked v3 (gamepad + multi-cue servo + pre-pause contact-sheet)");

@@ -28,6 +28,13 @@ export interface GamepadController {
   BTN: typeof BTN;
   simGamepad: Gamepad;
   setStick(index: number, x: number, y: number): void;
+  pulseStick(
+    index: number,
+    x: number,
+    y: number,
+    holdMs?: number,
+    settleMs?: number,
+  ): Promise<void>;
   setButton(index: number, value: number): void;
   tapButton(index: number, durationMs?: number, settleMs?: number): Promise<void>;
   rampStick(
@@ -143,6 +150,27 @@ export function createGamepadController(
     await sleep(settleMs);
   }
 
+  async function pulseStick(
+    index: number,
+    x: number,
+    y: number,
+    holdMs = 150,
+    settleMs = 160,
+  ): Promise<void> {
+    if (index < 0 || index >= gamepadAxes.length / 2) {
+      throw new Error(`Stick index out of bounds: ${index}`);
+    }
+    try {
+      setStick(index, x, y);
+      await sleep(holdMs);
+    } finally {
+      setStick(index, 0, 0);
+    }
+    if (settleMs > 0) {
+      await sleep(settleMs);
+    }
+  }
+
   async function rampStick(
     index: number,
     targetX: number,
@@ -200,6 +228,7 @@ export function createGamepadController(
     BTN,
     simGamepad,
     setStick,
+    pulseStick,
     setButton,
     tapButton,
     rampStick,

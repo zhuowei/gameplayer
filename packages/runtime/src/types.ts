@@ -69,24 +69,26 @@ export interface DriveServoOptions extends ChunkOptions {
   maxDurationMs?: number;
   /** Control tick period in ms (default: 33ms / ~30Hz) */
   tickMs?: number;
-  /** Proportional steering gain (default: 0.95) */
+  /** Proportional steering gain (default: 1.25) */
   kp?: number;
   /** Derivative steering damping (default: 0.25) */
   kd?: number;
-  /** Maximum left stick X magnitude (default: 0.85) */
+  /** Maximum left stick X magnitude (default: 0.95) */
   maxSteer?: number;
   /** Throttle button index (default: 3 / Y) */
   gasButton?: number;
+  /** Automatically feather throttle when steering hard into curves (default: true) */
+  throttleModulation?: boolean;
   /** Optional steering bias added to visual target offset (-1..1) */
   steerBias?: number;
-  /** Stop early if top HUD banner changes sharply after cooldown (default: true) */
+  /** Stop early if top HUD banner changes sharply after cooldown (default: false) */
   stopOnBannerChange?: boolean;
   bannerDeltaThreshold?: number;
-  /** Stop early if navigable corridor confidence falls below threshold (default: 0.22) */
+  /** Stop early if navigable corridor confidence falls below threshold (default: true / 0.25) */
   stopOnLowConfidence?: boolean;
   minConfidence?: number;
   lowConfidenceMs?: number;
-  /** Stop early if red HUD warning ("WRONG WAY") dominates */
+  /** Stop early if HUD warning ("WRONG WAY!") dominates */
   stopOnRedAlert?: boolean;
   redAlertThreshold?: number;
 }
