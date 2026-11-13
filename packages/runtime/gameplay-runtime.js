@@ -135,6 +135,7 @@
       };
     }
     return {
+      BTN,
       simGamepad,
       setStick,
       setButton,
@@ -149,8 +150,9 @@
 
   // packages/runtime/src/vision.ts
   var DEFAULT_STK_CROPS = [
-    { label: "MINIMAP", x: 0, y: 0.62, w: 0.24, h: 0.36 },
-    { label: "HUD / PROMPT", x: 0.14, y: 0.02, w: 0.72, h: 0.28 }
+    { label: "MINIMAP", x: 0, y: 0.56, w: 0.25, h: 0.42 },
+    { label: "TUTORIAL PROMPT", x: 0.2, y: 0.8, w: 0.6, h: 0.19 },
+    { label: "TOP HUD", x: 0.16, y: 0.02, w: 0.68, h: 0.28 }
   ];
   function createInitialRoadModel() {
     return { r: 120, g: 115, b: 110, initialized: false };
@@ -649,8 +651,8 @@
         unpauseButton = BTN.A,
         pause = true,
         pauseButton = BTN.START,
-        unpauseSettleMs = 110,
-        pauseSettleMs = 90,
+        unpauseSettleMs = 220,
+        pauseSettleMs = 150,
         sampleIntervalMs = 140,
         holdGasButton = null,
         resetOnEnd = true,
@@ -697,11 +699,11 @@
       let errMsg;
       let ok = true;
       try {
-        if (holdGasButton !== null) {
-          gamepad.setButton(holdGasButton, 1);
-        }
         if (unpause) {
           await gamepad.tapButton(unpauseButton, 90, unpauseSettleMs);
+        }
+        if (holdGasButton !== null) {
+          gamepad.setButton(holdGasButton, 1);
         }
         captureNow();
         timerId = window.setInterval(captureNow, sampleIntervalMs);
@@ -750,8 +752,8 @@
         unpauseButton = BTN.A,
         pause = true,
         pauseButton = BTN.START,
-        unpauseSettleMs = 110,
-        pauseSettleMs = 90,
+        unpauseSettleMs = 220,
+        pauseSettleMs = 150,
         sampleIntervalMs = 180,
         stopOnStuck = true,
         stuckThreshold = 0.008,
@@ -789,10 +791,10 @@
       let ok = true;
       const startedAt = performance.now();
       try {
-        gamepad.setButton(gasButton, 1);
         if (unpause) {
           await gamepad.tapButton(unpauseButton, 90, unpauseSettleMs);
         }
+        gamepad.setButton(gasButton, 1);
         const driveStart = performance.now();
         let lastTick = driveStart;
         let lastTileAt = -Infinity;

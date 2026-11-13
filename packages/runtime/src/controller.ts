@@ -164,8 +164,8 @@ export function createGameplayOrchestrator(
       unpauseButton = BTN.A,
       pause = true,
       pauseButton = BTN.START,
-      unpauseSettleMs = 110,
-      pauseSettleMs = 90,
+      unpauseSettleMs = 220,
+      pauseSettleMs = 150,
       sampleIntervalMs = 140,
       holdGasButton = null,
       resetOnEnd = true,
@@ -219,11 +219,12 @@ export function createGameplayOrchestrator(
     let ok = true;
 
     try {
-      if (holdGasButton !== null) {
-        gamepad.setButton(holdGasButton, 1);
-      }
+      // Unpause first so STK registers a fresh rising edge on gas after closing the pause menu
       if (unpause) {
         await gamepad.tapButton(unpauseButton, 90, unpauseSettleMs);
+      }
+      if (holdGasButton !== null) {
+        gamepad.setButton(holdGasButton, 1);
       }
 
       captureNow();
@@ -289,8 +290,8 @@ export function createGameplayOrchestrator(
       unpauseButton = BTN.A,
       pause = true,
       pauseButton = BTN.START,
-      unpauseSettleMs = 110,
-      pauseSettleMs = 90,
+      unpauseSettleMs = 220,
+      pauseSettleMs = 150,
       sampleIntervalMs = 180,
       stopOnStuck = true,
       stuckThreshold = 0.008,
@@ -332,11 +333,11 @@ export function createGameplayOrchestrator(
     const startedAt = performance.now();
 
     try {
-      // Engage gas before unpause to preserve momentum
-      gamepad.setButton(gasButton, 1);
+      // Unpause first so STK sees a fresh gas press after leaving the pause dialog
       if (unpause) {
         await gamepad.tapButton(unpauseButton, 90, unpauseSettleMs);
       }
+      gamepad.setButton(gasButton, 1);
 
       const driveStart = performance.now();
       let lastTick = driveStart;

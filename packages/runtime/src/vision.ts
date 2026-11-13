@@ -17,8 +17,9 @@ export interface FrameAnalysis {
 }
 
 export const DEFAULT_STK_CROPS: CropRegion[] = [
-  { label: "MINIMAP", x: 0.0, y: 0.62, w: 0.24, h: 0.36 },
-  { label: "HUD / PROMPT", x: 0.14, y: 0.02, w: 0.72, h: 0.28 },
+  { label: "MINIMAP", x: 0.0, y: 0.56, w: 0.25, h: 0.42 },
+  { label: "TUTORIAL PROMPT", x: 0.2, y: 0.8, w: 0.6, h: 0.19 },
+  { label: "TOP HUD", x: 0.16, y: 0.02, w: 0.68, h: 0.28 },
 ];
 
 export function createInitialRoadModel(): RoadColorModel {

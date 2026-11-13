@@ -25,6 +25,7 @@ export function clamp(val: number, min: number, max: number): number {
 }
 
 export interface GamepadController {
+  BTN: typeof BTN;
   simGamepad: Gamepad;
   setStick(index: number, x: number, y: number): void;
   setButton(index: number, value: number): void;
@@ -196,6 +197,7 @@ export function createGamepadController(
   }
 
   return {
+    BTN,
     simGamepad,
     setStick,
     setButton,
