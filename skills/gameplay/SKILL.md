@@ -12,7 +12,7 @@ Play games strictly through rendered video pixels (`<canvas>` / `<video>`) and v
 Instead of driving frame-by-frame through slow open-loop sleeps or `screencast_start` + `ffmpeg` video transcodes:
 
 1. **Inject `gameplay-runtime.js` once per page navigation:**
-   - Via `chrome-devtools` MCP (`evaluate_script`): pass `sourcePath: "/Users/zhuowei/Documents/antigravity/gameplay/packages/runtime/gameplay-runtime.js"`, `format: "script"`.
+   - Via `chrome-devtools` MCP (`evaluate_script`): pass the contents of `/Users/zhuowei/Documents/antigravity/gameplay/packages/runtime/gameplay-runtime.js` (or its `--minify` build) inline as `function` with `format: "script"` (note: `sourcePath` may fail if MCP `workspaceRoots` is unconfigured).
    - Or via CLI: `bun run packages/browsertool/index.ts inject --match https://jane.local` (requires CDP port 9222).
    - Verify with `() => Boolean(window.gameplayApi)`.
 
