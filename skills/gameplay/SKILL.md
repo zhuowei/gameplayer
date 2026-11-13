@@ -57,6 +57,7 @@ async () => await window.gameplayApi.driveServo({
 - **Runtime v3 capabilities & remaining boundaries**:
   - **Multi-cue road tracking**: `vision.ts` v3 rejects pale desert sand (`sandPenalty`), vertical plaster/canyon walls (`wallPenalty`), bright glare, grass, and sky; uses a thresholded column centroid (`navThreshold = 0.45`) so shoulders never dilute curve steering; freezes `roadModel` adaptation when off-center or low-confidence; and detects outlined orange-gold `WRONG WAY!` banners (`stopReason = "red_alert"`).
   - **Curvature-coupled throttle modulation**: `driveServo` automatically feathers `BTN.Y` when `|steer| > 0.44` so moderate-tight bends track cleanly.
+  - **Do not fight the road centroid with `steerBias` on curves**: Keep `steerBias: 0` whenever `driveServo` has clear road contrast (`roadConfidence >= 0.65`); passing an opposing `steerBias` from a misread minimap will push the vehicle off-road onto shoulders or cliffs. Reserve non-zero `steerBias` strictly for lane selection around small obstacles (such as bananas) on straights.
   - **When to switch to `runChunk`**: Use modest horizons (`1800–2400ms`) approaching blind hill crests or `>= 80°` hairpins, and switch to `runChunk` whenever executing explicit tutorial mechanics (weapon fire, look-behind fire, nitro, drift/skid) or blind 90°+ turns where road pixels are not yet visible ahead.
 
 ### B. System 2 — `runChunk()` (90°+ Hairpins, Blind Crests, Mechanics & Shoulder Re-entry)
@@ -95,8 +96,8 @@ After each `driveServo` or `runChunk`, call `take_screenshot` (`format: "jpeg"`,
 
 Treat rescues (`smartRescue()` / `BTN.BACK`) as an **emergency recovery**, not a routine cornering tool:
 
-- **Minor shoulder drift (1–3m off-road, road clearly visible beside you, no wall blocking)**:
-  - Recover via `runChunk`: release full throttle briefly or pulse gas while steering `0.4–0.6` back onto the road surface, then counter-steer straight upon re-entry.
+- **Minor shoulder drift or sloped cliff lip (1–3m off-road, road clearly visible beside you, no wall blocking)**:
+  - Recover via `runChunk`: release full throttle briefly or pulse gas while steering `0.4–0.6` forward back onto the road surface, then counter-steer straight upon re-entry. **Never hold reverse (`BTN.X`) when perched on a downward outer cliff lip**, or you will back down the slope into the ravine.
 - **True stuck / irrecoverable state (wedged against wall/fence, fallen off ledge, `WRONG WAY!`, or backwards)**:
   - Do **not** chain blind multi-point reverse turns. Either back straight out (`BTN.X` with stick `(0, 0)` for `600–800ms`) before steering forward, or call `await window.gameplayApi.smartRescue({ label: "rescue" })`.
 - **Track your rescue count**: Report total manual + automatic rescues at the end of a run. A clean playthrough should require **0–1 rescues**; repeated rescues indicate you entered corners too fast or misread turn direction.

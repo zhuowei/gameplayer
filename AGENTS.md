@@ -10,7 +10,7 @@
 - `packages/runtime/`: Injected browser runtime (`window.gameplayApi`) providing virtual Xbox-layout gamepad control, 30 Hz pixel servoing (`driveServo`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), and annotated 4×2 contact-sheet overlays.
 - `packages/browsertool/`: Zero-dependency Bun CLI for raw Chrome DevTools Protocol (`ws://127.0.0.1:9222`) when running outside network-isolated sandboxes.
 - `skills/gameplay/`: Progressive-disclosure gameplay skill ([SKILL.md](skills/gameplay/SKILL.md)) and game-specific runbooks ([supertuxkart.md](skills/gameplay/references/supertuxkart.md)).
-- `docs/lessons-learned.md`: Empirical post-mortem across three SuperTuxKart runs, CV/control failure analyses, and generalization roadmap.
+- `docs/lessons-learned.md`: Empirical post-mortem across four SuperTuxKart runs (through Runtime v3), CV/control failure analyses, and generalization roadmap.
 
 Build and test inside the standard sandbox before committing:
 ```sh
