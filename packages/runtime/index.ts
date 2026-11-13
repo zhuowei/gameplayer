@@ -1,65 +1,27 @@
-/// implements a fake controller.
+import { BTN, createGamepadController } from "./src/gamepad";
+import { createGameplayOrchestrator } from "./src/controller";
+import { hideSheetOverlay } from "./src/vision";
 
-const gamepadAxes = [0, 0, 0, 0];
-// standard mapping: https://adamjones.me/blog/gamepad-mapping/
-const gamepadButtons: GamepadButton[] = Array.from({ length: 17 }, () => ({
-  value: 0,
-  pressed: false,
-  touched: false,
-}));
-const simGamepad: Gamepad = {
-  id: "Gameplay - SimGamepad",
-  index: 0,
-  connected: true,
-  timestamp: 0,
-  axes: gamepadAxes,
-  buttons: gamepadButtons,
-  vibrationActuator: undefined as unknown as GamepadHapticActuator,
-  mapping: "standard",
-};
-
-const realGetGamepads = navigator.getGamepads;
-
-function hookGetGamepads() {
-  return [simGamepad];
-}
-
-navigator.getGamepads = hookGetGamepads;
-
-window.addEventListener("load", () => {
-  const event = new Event("gamepadconnected");
-  (event as any)["gamepad"] = simGamepad;
-  window.dispatchEvent(event);
-});
-console.log("Gameplay - hooked");
-
-function updateGamepad() {
-  (simGamepad.timestamp as number) = Date.now();
-}
+const gamepad = createGamepadController();
+const orchestrator = createGameplayOrchestrator(gamepad);
 
 const gameplayApi = {
-  setStick(index: number, x: number, y: number) {
-    if (index < 0 || index > gamepadAxes.length / 2) {
-      throw new Error("Stick index out of bounds");
-    }
-    gamepadAxes[index * 2] = x;
-    gamepadAxes[index * 2 + 1] = y;
-    updateGamepad();
-  },
-  setButton(index: number, value: number) {
-    if (index < 0 || index >= gamepadButtons.length) {
-      throw new Error("Button index out of bounds");
-    }
-    const b = gamepadButtons[index];
-    (b.value as number) = value;
-    (b.pressed as boolean) = value > 0;
-    updateGamepad();
-  },
-  async sleep(ms: number) {
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, ms);
-    });
-  },
+  BTN,
+  simGamepad: gamepad.simGamepad,
+  setStick: gamepad.setStick,
+  setButton: gamepad.setButton,
+  tapButton: gamepad.tapButton,
+  rampStick: gamepad.rampStick,
+  sleep: gamepad.sleep,
+  resetAll: gamepad.resetAll,
+  getState: gamepad.getState,
+  dispatchConnected: gamepad.dispatchConnected,
+  runChunk: orchestrator.runChunk,
+  driveServo: orchestrator.driveServo,
+  smartRescue: orchestrator.smartRescue,
+  hideOverlay: hideSheetOverlay,
+  inspectFrame: orchestrator.inspectFrame,
 };
 
-(window as any)["gameplayApi"] = gameplayApi;
+(window as unknown as Record<string, unknown>)["gameplayApi"] = gameplayApi;
+console.log("Gameplay - hooked v2 (gamepad + servo + contact-sheet)");
