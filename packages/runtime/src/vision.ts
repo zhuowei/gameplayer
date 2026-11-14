@@ -825,18 +825,74 @@ export class MinimapTracker {
     const ribbonMask = new Uint8Array(total);
     let ribbonPixels = 0;
 
-    // 1. Segment light-grey / white / pale-cyan track ribbon, ignoring outer 2px border
-    for (let y = 2; y < mmH - 2; y++) {
-      for (let x = 2; x < mmW - 2; x++) {
-        const idx = (y * mmW + x) * 4;
+    // 1. Segment bounded-width light-grey/white track strokes (4-axis bilateral dark-border span)
+    // Rejects broad light-grey scene surfaces (e.g. cobblestone/walls behind translucent HUD)
+    const lumArr = new Float32Array(total);
+    const brightCandidate = new Uint8Array(total);
+    for (let y = 0; y < mmH; y++) {
+      for (let x = 0; x < mmW; x++) {
+        const p = y * mmW + x;
+        const idx = p * 4;
         const r = rgba[idx];
         const g = rgba[idx + 1];
         const b = rgba[idx + 2];
         const lum = (r + g + b) / 3;
-        const maxC = Math.max(r, g, b);
-        const minC = Math.min(r, g, b);
-        if (lum > 145 && maxC - minC < 52) {
-          ribbonMask[y * mmW + x] = 1;
+        lumArr[p] = lum;
+        if (x >= 2 && x < mmW - 2 && y >= 2 && y < mmH - 2) {
+          const chr = Math.max(r, g, b) - Math.min(r, g, b);
+          if (lum > 168 && chr < 38) {
+            brightCandidate[p] = 1;
+          }
+        }
+      }
+    }
+
+    const maxSearch = Math.max(4, Math.round(5 * scale));
+    const maxSpan = Math.max(6, Math.round(6 * scale));
+    const checkAxis = (
+      x: number,
+      y: number,
+      centerLum: number,
+      dx: number,
+      dy: number,
+    ): boolean => {
+      let dNeg = 0;
+      for (let s = 1; s <= maxSearch; s++) {
+        const nx = x - dx * s;
+        const ny = y - dy * s;
+        if (nx < 0 || nx >= mmW || ny < 0 || ny >= mmH) break;
+        if (centerLum - lumArr[ny * mmW + nx] >= 26) {
+          dNeg = s;
+          break;
+        }
+      }
+      if (dNeg === 0) return false;
+      let dPos = 0;
+      for (let s = 1; s <= maxSearch; s++) {
+        const px = x + dx * s;
+        const py = y + dy * s;
+        if (px < 0 || px >= mmW || py < 0 || py >= mmH) break;
+        if (centerLum - lumArr[py * mmW + px] >= 26) {
+          dPos = s;
+          break;
+        }
+      }
+      if (dPos === 0) return false;
+      const stepScale = dx !== 0 && dy !== 0 ? 1.414 : 1;
+      return (dNeg + dPos) * stepScale <= maxSpan;
+    };
+
+    for (let y = 2; y < mmH - 2; y++) {
+      for (let x = 2; x < mmW - 2; x++) {
+        const p = y * mmW + x;
+        if (!brightCandidate[p]) continue;
+        const centerLum = lumArr[p];
+        const isStroke =
+          checkAxis(x, y, centerLum, 1, 0) ||
+          checkAxis(x, y, centerLum, 0, 1) ||
+          (checkAxis(x, y, centerLum, 1, 1) && checkAxis(x, y, centerLum, 1, -1));
+        if (isStroke) {
+          ribbonMask[p] = 1;
           ribbonPixels++;
         }
       }
@@ -1209,16 +1265,58 @@ export function detectRaceFinished(
     return false;
   }
 
+  // 1b. Live race clock guard in top-right (x: 0.78..0.99, y: 0.01..0.12):
+  // STK's live timer draws crisp outlined white digits absent on post-race result screens.
+  const clkX0 = Math.floor(width * 0.78);
+  const clkX1 = Math.floor(width * 0.99);
+  const clkY0 = Math.floor(height * 0.01);
+  const clkY1 = Math.floor(height * 0.12);
+  let clockHits = 0;
+  for (let y = clkY0; y < clkY1; y++) {
+    for (let x = clkX0; x < clkX1; x++) {
+      const idx = (y * width + x) * 4;
+      const r = rgba[idx];
+      const g = rgba[idx + 1];
+      const b = rgba[idx + 2];
+      const lum = (r + g + b) / 3;
+      const chr = Math.max(r, g, b) - Math.min(r, g, b);
+      if (lum > 220 && chr < 32) {
+        let hasDarkBorder = false;
+        for (let dy = -1; dy <= 1 && !hasDarkBorder; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= height) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx;
+            if (nx < 0 || nx >= width) continue;
+            const nIdx = (ny * width + nx) * 4;
+            if ((rgba[nIdx] + rgba[nIdx + 1] + rgba[nIdx + 2]) / 3 < 55) {
+              hasDarkBorder = true;
+              break;
+            }
+          }
+        }
+        if (hasDarkBorder) {
+          clockHits++;
+          if (clockHits >= 3) return false;
+        }
+      }
+    }
+  }
+
   // 2. Sample center modal interior (x: 0.22..0.78, y: 0.20..0.78)
   const inX0 = Math.floor(width * 0.22);
   const inX1 = Math.floor(width * 0.78);
   const inY0 = Math.floor(height * 0.2);
   const inY1 = Math.floor(height * 0.78);
+  const midY = Math.floor(height * 0.48);
 
   const rs: number[] = [];
   const gs: number[] = [];
   const bs: number[] = [];
   let textEdges = 0;
+  let upperUiTextEdges = 0;
+  let lowerUiTextEdges = 0;
   let edgeSamples = 0;
 
   for (let y = inY0; y < inY1; y += 2) {
@@ -1237,8 +1335,28 @@ export function detectRaceFinished(
         const dIdx = ((y + 1) * width + x) * 4;
         const rLum = 0.299 * rgba[rIdx] + 0.587 * rgba[rIdx + 1] + 0.114 * rgba[rIdx + 2];
         const dLum = 0.299 * rgba[dIdx] + 0.587 * rgba[dIdx + 1] + 0.114 * rgba[dIdx + 2];
-        if (Math.abs(lum - rLum) > 42 || Math.abs(lum - dLum) > 42) {
+        const diffR = Math.abs(lum - rLum);
+        const diffD = Math.abs(lum - dLum);
+        if (diffR > 42 || diffD > 42) {
           textEdges++;
+        }
+        const cBright = (r + g + b) / 3 > 200 && Math.max(r, g, b) - Math.min(r, g, b) < 42;
+        const rBright =
+          (rgba[rIdx] + rgba[rIdx + 1] + rgba[rIdx + 2]) / 3 > 200 &&
+          Math.max(rgba[rIdx], rgba[rIdx + 1], rgba[rIdx + 2]) -
+            Math.min(rgba[rIdx], rgba[rIdx + 1], rgba[rIdx + 2]) <
+            42;
+        const dBright =
+          (rgba[dIdx] + rgba[dIdx + 1] + rgba[dIdx + 2]) / 3 > 200 &&
+          Math.max(rgba[dIdx], rgba[dIdx + 1], rgba[dIdx + 2]) -
+            Math.min(rgba[dIdx], rgba[dIdx + 1], rgba[dIdx + 2]) <
+            42;
+        if (
+          ((cBright || rBright) && diffR > 45) ||
+          ((cBright || dBright) && diffD > 45)
+        ) {
+          if (y < midY) upperUiTextEdges++;
+          else lowerUiTextEdges++;
         }
         edgeSamples++;
       }
@@ -1248,6 +1366,7 @@ export function detectRaceFinished(
   if (rs.length < 20 || edgeSamples < 20) return false;
   const textEdgeRatio = textEdges / edgeSamples;
   if (textEdgeRatio < 0.035) return false;
+  if (upperUiTextEdges < 4 || lowerUiTextEdges < 4) return false;
 
   const sortedR = [...rs].sort((a, b) => a - b);
   const sortedG = [...gs].sort((a, b) => a - b);
@@ -1258,6 +1377,7 @@ export function detectRaceFinished(
   const medB = sortedB[mid];
   const medLum = (medR + medG + medB) / 3;
   if (medLum < 30 || medLum > 228) return false;
+  if (medR - medB > 55) return false;
 
   let matchingModal = 0;
   for (let i = 0; i < rs.length; i++) {

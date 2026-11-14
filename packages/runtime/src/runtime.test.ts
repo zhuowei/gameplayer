@@ -797,7 +797,7 @@ describe("vision & PID servo", () => {
     (globalThis as unknown as { window: Record<string, unknown> }).window = {
       ...(globalThis as unknown as { window: Record<string, unknown> }).window,
       gameplayApi: {
-        version: "5.0.0",
+        version: "5.0.1",
         BTN,
         ...gp,
         ...orch,
@@ -819,7 +819,7 @@ describe("vision & PID servo", () => {
     });
     const verified = await verifyFn();
     expect(verified.hasApi).toBe(true);
-    expect(verified.version).toBe("5.0.0");
+    expect(verified.version).toBe("5.0.1");
     expect(verified.frame?.foundSurface).toBe(true);
 
     // Snippet 2 & 3: fast-forward performance.now slightly so 7000ms / 6000ms snippets finish in <20ms
@@ -878,5 +878,308 @@ describe("vision & PID servo", () => {
       },
     );
     expect(chunkRes.ok).toBe(true);
+  });
+
+  test("neutralizes stick and gas BEFORE pressing BTN.START pause (seg-40 regression)", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
+    const startSnapshots: Array<{ axes0: number; gasPressed: number; time: number }> = [];
+    let maxSteerSeen = 0;
+    mockWindow.setTimeout = ((cb: TimerHandler) => {
+      const pad = mockNav.getGamepads()[0];
+      if (pad) {
+        maxSteerSeen = Math.max(maxSteerSeen, pad.axes[0] ?? 0);
+        if (pad.buttons[BTN.START]?.pressed) {
+          startSnapshots.push({
+            axes0: pad.axes[0] ?? 0,
+            gasPressed: pad.buttons[BTN.Y]?.pressed ? 1 : 0,
+            time: startSnapshots.length,
+          });
+        }
+      }
+      return globalThis.setTimeout(cb, 2);
+    }) as unknown as typeof window.setTimeout;
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+
+    const fakeCapture = {
+      resetTracking() {},
+      resetRoadModel() {},
+      findVideoSurface: () => ({}) as HTMLCanvasElement,
+      sampleAnalysis: () => ({
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0.95,
+        roadCurvature: 0,
+        roadConfidence: 0.05,
+        updatedRoadModel: createInitialRoadModel(),
+        raceFinishedCandidate: false,
+      }),
+      captureTile: (_s: unknown, tMs: number, axes: number[], buttons: number[]) => ({
+        tMs,
+        width: 320,
+        height: 240,
+        canvas: {} as HTMLCanvasElement,
+        axes,
+        buttons,
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0.95,
+        roadCurvature: 0,
+        roadConfidence: 0.05,
+      }),
+      captureFullFrame: () => ({}) as HTMLCanvasElement,
+    } as unknown as VideoCaptureEngine;
+
+    const origNow = performance.now.bind(performance);
+    let simMs = 0;
+    performance.now = () => {
+      simMs += 110;
+      return simMs;
+    };
+    try {
+      const orch = createGameplayOrchestrator(gp, fakeCapture);
+      const res = await orch.driveServo({
+        maxDurationMs: 7000,
+        tickMs: 5,
+        lowConfidenceMs: 250,
+        unpauseSettleMs: 5,
+        pauseSettleMs: 5,
+        showSheetOverlay: false,
+        useInPageDepth: false,
+        useMinimapOdometry: false,
+        label: "seg-40-pause-neutral",
+      });
+      expect(res.stopReason).toBe("low_confidence");
+      expect(maxSteerSeen).toBeGreaterThan(0.3);
+      expect(startSnapshots.length).toBe(1);
+      for (const snap of startSnapshots) {
+        expect(Math.abs(snap.axes0)).toBe(0);
+        expect(snap.gasPressed).toBe(0);
+      }
+
+      // Also verify runChunk resets full right steer before Pause tap
+      startSnapshots.length = 0;
+      maxSteerSeen = 0;
+      await orch.runChunk(
+        async ({ api }) => {
+          api.setStick(0, 0.95, 0);
+          await api.sleep(5);
+        },
+        {
+          holdGasButton: BTN.Y,
+          unpauseSettleMs: 5,
+          pauseSettleMs: 5,
+          showSheetOverlay: false,
+          label: "chunk-pause-neutral",
+        },
+      );
+      expect(maxSteerSeen).toBeGreaterThan(0.9);
+      expect(startSnapshots.length).toBe(1);
+      for (const snap of startSnapshots) {
+        expect(Math.abs(snap.axes0)).toBe(0);
+        expect(snap.gasPressed).toBe(0);
+      }
+    } finally {
+      performance.now = origNow;
+    }
+  });
+
+  test("MinimapTracker rejects 7px light-grey cobblestone grid while tracking outlined silver ribbon", () => {
+    const mmW = 64;
+    const mmH = 64;
+
+    // 1. 7px x 7px light-grey cobblestone tiles with 1px darker mortar -> must NOT flood
+    const cobbleTracker = new MinimapTracker();
+    const cobbleFrame = makeTestFrame(mmW, mmH, (x, y) => {
+      if (x % 8 === 0 || y % 8 === 0) return [132, 136, 142];
+      return [186, 188, 192];
+    });
+    const cobbleRes = analyzeMinimapRgba(cobbleFrame, mmW, mmH, cobbleTracker);
+    expect(cobbleRes.visible).toBe(false);
+    expect(cobbleRes.ribbonPixels).toBeLessThan(10);
+    expect(cobbleRes.distance).toBe(0);
+
+    // 2. Outlined 3px silver minimap ribbon rendered over cobblestone -> must track cleanly
+    const tracker = new MinimapTracker();
+    const drawOverCobble = (dotX: number, dotY: number) =>
+      makeTestFrame(mmW, mmH, (x, y) => {
+        if (Math.hypot(x - dotX, y - dotY) <= 1.8) return [235, 32, 32];
+        const onVertical = Math.abs(x - 26) <= 1 && y >= 10 && y <= 46;
+        if (onVertical) return [222, 226, 232];
+        const onOutline = Math.abs(x - 26) <= 2.2 && y >= 9 && y <= 47;
+        if (onOutline) return [72, 78, 86];
+        if (x % 8 === 0 || y % 8 === 0) return [132, 136, 142];
+        return [186, 188, 192];
+      });
+
+    let last = analyzeMinimapRgba(drawOverCobble(26, 16), mmW, mmH, tracker);
+    for (let step = 1; step <= 6; step++) {
+      last = analyzeMinimapRgba(drawOverCobble(26, 16 + step * 2), mmW, mmH, tracker);
+    }
+    expect(last.visible).toBe(true);
+    expect(last.onRibbon).toBe(true);
+    expect(last.headingValid).toBe(true);
+    expect(last.ribbonPixels).toBeLessThan(mmW * mmH * 0.35);
+    expect(last.distance).toBeGreaterThan(6);
+  });
+
+  test("detectRaceFinished rejects stationary pumpkin + WRONG WAY + live race clock false positives", () => {
+    const w = 160;
+    const h = 120;
+
+    // Helper: draw crisp outlined white top-right race clock digits (x: 0.81..0.96, y: 0.03..0.09)
+    const isTopRightClock = (x: number, y: number): "outline" | "digit" | null => {
+      if (x >= Math.floor(w * 0.81) && x <= Math.floor(w * 0.96) && y >= 4 && y <= 11) {
+        const inner = x >= Math.floor(w * 0.83) && x <= Math.floor(w * 0.94) && y >= 6 && y <= 9;
+        if (inner && x % 2 === 0) return "digit";
+        return "outline";
+      }
+      return null;
+    };
+
+    // 1. Seg-19 Blackhill Mansion pumpkin collision WITHOUT top-right clock (warm orange interior + cobblestone)
+    const pumpkinNoClock = makeTestFrame(w, h, (x, y) => {
+      // Red WRONG WAY banner in upper center
+      if (x >= w * 0.32 && x <= w * 0.68 && y >= 18 && y <= 28) {
+        return x % 4 === 0 ? [245, 245, 245] : [220, 35, 35];
+      }
+      // Huge orange ribbed pumpkin filling center modal region (x: 0.20..0.80, y: 0.25..0.85)
+      if (x >= w * 0.2 && x <= w * 0.8 && y >= h * 0.25 && y <= h * 0.85) {
+        return x % 8 === 0 ? [95, 42, 12] : [205, 110, 32];
+      }
+      // Cobblestone road margins
+      return (x + y) % 6 < 3 ? [118, 122, 130] : [168, 170, 175];
+    });
+    expect(detectRaceFinished(pumpkinNoClock, w, h, false)).toBe(false);
+
+    // 2. Neutral/slate upper-only HUD banner (no lower modal rows) without clock
+    const upperBannerOnly = makeTestFrame(w, h, (x, y) => {
+      const inBox = x >= w * 0.2 && x <= w * 0.8 && y >= h * 0.16 && y <= h * 0.82;
+      if (inBox) {
+        if (y >= 26 && y <= 34 && x >= w * 0.3 && x <= w * 0.7 && x % 3 !== 0) {
+          return [242, 245, 248];
+        }
+        return [58, 66, 78];
+      }
+      return [145, 165, 185];
+    });
+    expect(detectRaceFinished(upperBannerOnly, w, h, false)).toBe(false);
+
+    // 3. Even a scoreboard-like modal must return false when top-right live race clock is present
+    const modalWithClock = makeTestFrame(w, h, (x, y) => {
+      const clk = isTopRightClock(x, y);
+      if (clk === "digit") return [245, 248, 250];
+      if (clk === "outline") return [18, 22, 28];
+      const inBox = x >= w * 0.2 && x <= w * 0.8 && y >= h * 0.16 && y <= h * 0.82;
+      if (inBox) {
+        if (y % 14 >= 4 && y % 14 <= 8 && x >= w * 0.28 && x <= w * 0.72 && x % 4 !== 0) {
+          return [242, 245, 248];
+        }
+        return [32, 62, 112];
+      }
+      return [145, 165, 185];
+    });
+    expect(detectRaceFinished(modalWithClock, w, h, false)).toBe(false);
+  });
+
+  test("triggers autoUnwedge when pinned against 3D obstacle despite micro-jitter motionScore", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
+    mockWindow.setTimeout = ((cb: TimerHandler) =>
+      globalThis.setTimeout(cb, 2)) as unknown as typeof window.setTimeout;
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+
+    let modelResetCount = 0;
+    const fakeCapture = {
+      resetTracking() {},
+      resetRoadModel() {
+        modelResetCount++;
+      },
+      findVideoSurface: () => ({}) as HTMLCanvasElement,
+      sampleAnalysis: () => {
+        const pinned = modelResetCount === 0;
+        return {
+          // Micro-jitter motionScore ~0.022 is ABOVE default stuckThreshold (0.008)
+          motionScore: pinned ? 0.022 : 0.06,
+          bannerDelta: 0,
+          redAlertRatio: 0,
+          roadOffsetX: 0,
+          roadCurvature: 0,
+          roadConfidence: pinned ? 0.55 : 0.88,
+          updatedRoadModel: createInitialRoadModel(),
+          raceFinishedCandidate: false,
+        };
+      },
+      captureTile: (
+        _s: unknown,
+        tMs: number,
+        axes: number[],
+        buttons: number[],
+        a: { roadOffsetX: number; roadConfidence: number; motionScore: number },
+      ) => ({
+        tMs,
+        width: 320,
+        height: 240,
+        canvas: {} as HTMLCanvasElement,
+        axes,
+        buttons,
+        motionScore: a.motionScore,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: a.roadOffsetX,
+        roadCurvature: 0,
+        roadConfidence: a.roadConfidence,
+      }),
+      captureFullFrame: () => ({}) as HTMLCanvasElement,
+    } as unknown as VideoCaptureEngine;
+
+    const fakeDepth: DepthEngineLike = {
+      async init() {
+        return this.getStatus();
+      },
+      getStatus() {
+        const pinned = modelResetCount === 0;
+        return {
+          ready: true,
+          mode: "worker",
+          inputSize: [280, 210],
+          inferencesCompleted: 1,
+          lastInferMs: 35,
+          lastResult: {
+            sectorClearance: [0.3, 0.25, 0.14, 0.65, 0.72],
+            corridorOffsetX: 0.68,
+            wallOrObstacleAhead: pinned,
+            centerClearance: pinned ? 0.14 : 0.78,
+            maxClearance: pinned ? 0.72 : 0.85,
+            inferMs: 35,
+            timestamp: performance.now(),
+          },
+        };
+      },
+      submitFrameNonBlocking() {
+        return this.getStatus().lastResult;
+      },
+      async inferOnce() {
+        return this.getStatus().lastResult;
+      },
+    };
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture, fakeDepth);
+    const res = await orch.driveServo({
+      maxDurationMs: 650,
+      tickMs: 12,
+      stuckDurationMs: 60,
+      unwedgeReverseMs: 12,
+      unwedgeForwardMs: 12,
+      unpauseSettleMs: 5,
+      pauseSettleMs: 5,
+      showSheetOverlay: false,
+      label: "seg-pinned-3d",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.unwedgeCount).toBe(1);
+    expect(res.stuckDetected).toBe(false);
+    expect(res.stopReason).toBe("horizon_complete");
   });
 });

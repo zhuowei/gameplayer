@@ -316,15 +316,18 @@ export function createGameplayOrchestrator(
           // ignore snapshot error
         }
       }
+      if (resetOnEnd) {
+        gamepad.resetAll();
+      }
       if (pause) {
         try {
           await gamepad.tapButton(pauseButton, 90, pauseSettleMs);
         } catch {
           // ignore secondary error during pause cleanup
         }
-      }
-      if (resetOnEnd) {
-        gamepad.resetAll();
+        if (resetOnEnd) {
+          gamepad.resetAll();
+        }
       }
     }
 
@@ -365,8 +368,8 @@ export function createGameplayOrchestrator(
       redAlertThreshold = 0.035,
       autoUnwedge = true,
       maxUnwedgeAttempts = 2,
-      unwedgeReverseMs = 420,
-      unwedgeForwardMs = 480,
+      unwedgeReverseMs = 580,
+      unwedgeForwardMs = 560,
       useInPageDepth = true,
       useMinimapOdometry = true,
       stopOnRaceFinish = true,
@@ -501,9 +504,11 @@ export function createGameplayOrchestrator(
 
         if (freshDepth) {
           const dWeight =
-            freshDepth.wallOrObstacleAhead || freshDepth.centerClearance < 0.48
-              ? 0.55
-              : 0.22;
+            freshDepth.wallOrObstacleAhead && freshDepth.centerClearance < 0.38
+              ? 0.78
+              : freshDepth.wallOrObstacleAhead || freshDepth.centerClearance < 0.52
+                ? 0.58
+                : 0.22;
           visualTarget =
             (1 - dWeight) * visualTarget +
             dWeight * clamp(freshDepth.corridorOffsetX, -1, 1);
@@ -599,7 +604,15 @@ export function createGameplayOrchestrator(
 
         // Event checks after initial 350ms settle
         if (elapsed > 350) {
-          if (stopOnStuck && analysis.motionScore < stuckThreshold) {
+          const pinnedAgainst3DObstacle =
+            freshDepth !== null &&
+            freshDepth.wallOrObstacleAhead &&
+            freshDepth.centerClearance < 0.22 &&
+            analysis.motionScore < Math.max(stuckThreshold, 0.03);
+          if (
+            stopOnStuck &&
+            (analysis.motionScore < stuckThreshold || pinnedAgainst3DObstacle)
+          ) {
             lowMotionAcc += dtMs;
             if (lowMotionAcc >= stuckDurationMs) {
               if (autoUnwedge && unwedgeCount < maxUnwedgeAttempts) {
@@ -757,15 +770,18 @@ export function createGameplayOrchestrator(
           // ignore snapshot error
         }
       }
+      if (resetOnEnd) {
+        gamepad.resetAll();
+      }
       if (pause && !raceFinished) {
         try {
           await gamepad.tapButton(pauseButton, 90, pauseSettleMs);
         } catch {
           // ignore
         }
-      }
-      if (resetOnEnd) {
-        gamepad.resetAll();
+        if (resetOnEnd) {
+          gamepad.resetAll();
+        }
       }
     }
 

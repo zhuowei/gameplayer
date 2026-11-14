@@ -1,6 +1,6 @@
-# `@gameplay/runtime` (`window.gameplayApi` `v5.0.0`)
+# `@gameplay/runtime` (`window.gameplayApi` `v5.0.1`)
 
-Browser-injected virtual gamepad, 30 Hz pure-pursuit servo with non-blocking in-page 3D depth Web Worker + stateful minimap odometry + local `autoUnwedge`, safe pause-bounded chunk runner, and pre-pause contact-sheet compositor for playing unmodified streamed games in Chrome.
+Browser-injected virtual gamepad, 30 Hz pure-pursuit servo with non-blocking in-page 3D depth Web Worker + stateful minimap odometry (with bounded-width cobblestone stroke filtering) + local `autoUnwedge`, safe pause-bounded chunk runner (neutralizing inputs before pressing `BTN.START`), and pre-pause contact-sheet compositor for playing unmodified streamed games in Chrome.
 
 ## Build & Test
 
@@ -11,7 +11,7 @@ bun test
 ```
 
 Outputs:
-- `packages/runtime/gameplay-runtime.js`: Standalone IIFE exposing `window.gameplayApi` (`v5.0.0`).
+- `packages/runtime/gameplay-runtime.js`: Standalone IIFE exposing `window.gameplayApi` (`v5.0.1`).
 - `.cache/gameplay-depth-bundle.js` (gitignored, generated when cached model exists): Offline `onnxruntime-web` WASM + quantized **Depth Anything V2 Small** (`280×210`) asset bundle.
 
 ## Injection (`chrome-devtools` MCP)
@@ -20,7 +20,7 @@ With `--workspace` configured on `chrome-devtools` MCP, inject via `evaluate_scr
 1. `.cache/gameplay-depth-bundle.js` (optional, enables in-page 3D depth)
 2. `packages/runtime/gameplay-runtime.js`
 
-Initialize and verify (`version: "5.0.0"`):
+Initialize and verify (`version: "5.0.1"`):
 
 ```js
 async () => ({

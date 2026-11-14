@@ -16,7 +16,7 @@ For game-specific bindings, track hazards, and empirical post-mortems, load on d
 
 ---
 
-## 1. Inject & Verify `window.gameplayApi` (`v5.0.0`)
+## 1. Inject & Verify `window.gameplayApi` (`v5.0.1`)
 
 1. **Find target page**: Call `chrome-devtools` MCP `list_pages` to get `pageId`.
 2. **Inject depth bundle + runtime** (once per page load):
@@ -33,7 +33,7 @@ For game-specific bindings, track hazards, and empirical post-mortems, load on d
      frame: window.gameplayApi?.inspectFrame(),
    })
    ```
-   Confirm `version: "5.0.0"`, `frame.foundSurface: true`, and `depth.ready: true` (`mode: "worker"` for non-blocking background inference, or `"main_thread"` discrete fallback if CSP blocks `blob:` Workers).
+   Confirm `version: "5.0.1"`, `frame.foundSurface: true`, and `depth.ready: true` (`mode: "worker"` for non-blocking background inference, or `"main_thread"` discrete fallback if CSP blocks `blob:` Workers).
 
 ---
 
@@ -41,7 +41,7 @@ For game-specific bindings, track hazards, and empirical post-mortems, load on d
 
 Before entering real-time action, verify four behaviors using `hideOverlay()` + single JPEG screenshots (`format: "jpeg"`, `quality: 85`, omitting `filePath`):
 1. **Menu navigation**: Test whether menus respond to `BTN.DPAD_*` taps (`tapButton(BTN.DPAD_DOWN, 90, 180)`) or short analog Left Stick pulses (`await window.gameplayApi.pulseStick(0, x, y, 65, 220)`—e.g. SuperTuxKart's Main Menu ignores `DPAD_*` and moves 1 slot per ~65ms stick pulse).
-2. **Pause & Unpause buttons**: Confirm which button opens Pause (usually `BTN.START = 9`) and which resumes (`BTN.A = 0` or `BTN.START = 9`). Runtime v5 automatically snapshots `FINAL MINIMAP` / `FINAL TUTORIAL PROMPT` / `FINAL LOOKAHEAD & ALERT` **before** tapping `BTN.START` (and skips pausing when `raceFinished === true` so post-race scoreboards stay visible).
+2. **Pause & Unpause buttons**: Confirm which button opens Pause (usually `BTN.START = 9`) and which resumes (`BTN.A = 0` or `BTN.START = 9`). Runtime `v5.0.1` resets all sticks/buttons **before** tapping `BTN.START` (preventing horizontal Pause-menu scroll onto `Exit Race`), snapshots `FINAL MINIMAP` / `FINAL TUTORIAL PROMPT` / `FINAL LOOKAHEAD & ALERT` before pausing, and skips pausing only when `raceFinished === true`.
 3. **Edge-triggered inputs across Pause**: Verify whether holding throttle across unpause works or is ignored until re-pressed *after* the pause dialog closes (handled automatically by `driveServo` and `runChunk` via `unpauseSettleMs: 220`).
 4. **Overloaded buttons**: Note buttons whose meaning flips between paused and unpaused states (e.g., in SuperTuxKart `BTN.A` confirms/unpauses in menus, but **looks behind** during live driving).
 
@@ -49,8 +49,8 @@ Before entering real-time action, verify four behaviors using `hideOverlay()` + 
 
 ## 3. Control Loops (`driveServo` v5 + `runChunk` + High-Res Host `perceive`)
 
-### A. System 1 — `driveServo()` (`v5.0.0` Event-Driven Adaptive Horizon)
-Use `driveServo` (`v5.0.0`) with **6000–7500ms horizons** (`maxDurationMs: 7000` default) across straights, bridges, archways, curves, and obstacles across **any unseen track biome** (asphalt, cobblestone, dirt, grated steel bridges, underwater tunnels, snow/ice, wood, moss):
+### A. System 1 — `driveServo()` (`v5.0.1` Event-Driven Adaptive Horizon)
+Use `driveServo` (`v5.0.1`) with **6000–7500ms horizons** (`maxDurationMs: 7000` default) across straights, bridges, archways, curves, and obstacles across **any unseen track biome** (asphalt, cobblestone, dirt, grated steel bridges, underwater tunnels, snow/ice, wood, moss):
 ```js
 async () => await window.gameplayApi.driveServo({
   maxDurationMs: 7000,
@@ -64,12 +64,12 @@ async () => await window.gameplayApi.driveServo({
 ```
 - Pass `unpause: false` **only** when the game is already unpaused (such as the initial `Ready! / Set! / Go!` countdown, which resets and seeds the road appearance model onto the center deck/road).
 - **Mid-lap surface transitions (`resetRoadModel`)**: If `driveServo` still stops early with `stop=low_confidence` across a sudden texture change (or you want to force re-seeding onto a new surface), call `window.gameplayApi.resetRoadModel()` before the next `driveServo`.
-- **Runtime v5 in-loop capabilities**:
-  - **Non-blocking 3D depth Web Worker (`280×210`, ~540–550ms/frame in Chrome)**: Computes 7-sector 3D clearance & mode-seeking open corridor (`corridorOffsetX`), automatically increasing fusion weight (`0.55`) whenever `wallOrObstacleAhead || centerClearance < 0.48`. Never shrink depth input below `280×210` (ViT positional embeddings collapse below `280px`).
-  - **30 Hz Stateful Minimap Odometry (`MinimapTracker`)**: Tracks the moving player marker across frames (ignoring stationary finish ticks), maintains ego heading (`minimapHeadingDeg`), and casts forward rays in kart ego space (`minimapTurnAhead` in `[-1..+1]`, immune to North/South inversion).
+- **Runtime `v5.0.1` in-loop capabilities**:
+  - **Non-blocking 3D depth Web Worker (`280×210`, ~540–550ms/frame in Chrome)**: Computes 7-sector 3D clearance & mode-seeking open corridor (`corridorOffsetX`), scaling depth fusion aggressively (`0.78` when `wallOrObstacleAhead && centerClearance < 0.38`, `0.58` when `wallOrObstacleAhead || centerClearance < 0.52`, else `0.22`). Never shrink depth input below `280×210` (ViT positional embeddings collapse below `280px`).
+  - **30 Hz Stateful Minimap Odometry (`MinimapTracker`)**: Uses a bounded-width 4-axis bilateral dark-border stroke filter to reject broad light-grey cobblestone behind translucent HUD overlays, tracks the moving player marker across frames (ignoring stationary finish ticks), maintains ego heading (`minimapHeadingDeg`), and casts forward rays in kart ego space (`minimapTurnAhead` in `[-1..+1]`, immune to North/South inversion).
   - **Grated bridge & underwater pillar robustness**: Rejects cyan/blue-white and red-white striped curbs during seeding/lookahead, weights center-nose road pixels 2×, and suppresses vertical stone colonnade pillars even in blue underwater lighting.
-  - **In-loop `autoUnwedge` reflex**: Automatically executes up to 2 bounded `reverse straight → resetRoadModel → steer toward open 3D depth/minimap corridor` recoveries inside `driveServo` before escalating `stopReason = "stuck"`.
-  - **In-loop race finish detection (`stopOnRaceFinish`)**: Halts with `stopReason = "race_finished"` and `raceFinished: true` (without pressing `BTN.START` pause) only when the post-race scoreboard modal appears and active minimap/speedometer HUD vanish.
+  - **In-loop `autoUnwedge` reflex**: Automatically executes up to 2 bounded `reverse straight (580ms) → resetRoadModel → steer toward open 3D depth/minimap corridor (560ms)` recoveries inside `driveServo` when stalled or `pinnedAgainst3DObstacle` (`centerClearance < 0.22` even with wheel/camera micro-jitter) before escalating `stopReason = "stuck"`.
+  - **In-loop race finish detection (`stopOnRaceFinish`)**: Halts with `stopReason = "race_finished"` and `raceFinished: true` (without pressing `BTN.START` pause) only when active minimap/speedometer HUD vanish, the top-right live race clock disappears, warm/orange foreground obstacles are absent, and a cohesive dark/blue scoreboard modal with neutral white text in both upper and lower halves appears.
 
 ### B. Host High-Res Tie-Breaker — `bun run perceive` (`518×518` Offline CLI)
 Call `bun run perceive /path/to/screenshot.jpg` (**~400ms inside Standard Sandbox Mode with `BypassSandbox: false`**) when `driveServo` stops early with `stop=low_confidence`, `stop=stuck` (after `autoUnwedge` retries), `stop=red_alert`, or before complex multi-way forks:

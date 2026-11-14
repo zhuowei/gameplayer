@@ -13,8 +13,8 @@ Reference for playing unmodified SuperTuxKart streamed over MoonlightWeb (`https
 | `BTN.LB` | `4` | **Nitro Boost** | — | Requires collected blue nitro energy in bottom-right gauge. |
 | `BTN.RB` | `5` | **Skid / Drift** | — | Requires simultaneous Left Stick steering (`|x| >= 0.45`) while moving; holding too long spins out. |
 | `BTN.BACK` | `8` | **Rescue (Lakitu Bird)** | — | Lifts kart for ~1.4s and drops on centerline; `smartRescue()` wraps this cleanly. |
-| `BTN.START` | `9` | **Open Pause Dialog** | — | Hides live HUD while paused (`runtime` v3 snapshots crops *before* `START`). |
-| Left Stick (`axis 0, 1`) | — | **Steer Left (`-x`) / Right (`+x`)** | **Navigate UI tiles (`pulseStick`)** | **Main Menu requires Left Stick** (`pulseStick`), NOT `DPAD_*`! |
+| `BTN.START` | `9` | **Open Pause Dialog** | — | Hides live HUD while paused (`runtime` snapshots crops *before* `START`); reset stick before pressing `START` because STK's horizontal Pause menu scrolls immediately if Left Stick `x` is still deflected (`Resume` → `Restart` → `Setup New Race` → `Exit Race`). |
+| Left Stick (`axis 0, 1`) | — | **Steer Left (`-x`) / Right (`+x`)** | **Navigate UI tiles (`pulseStick`)** | **Main Menu & horizontal Pause menu respond to Left Stick** (`pulseStick`), NOT `DPAD_*`! |
 | `BTN.DPAD_*` | `12–15` | — | Ignored on Main Menu | Do **not** rely on `DPAD_*` on STK's Main Menu; use `pulseStick(0, x, y)`. |
 
 ---
@@ -30,6 +30,13 @@ Reference for playing unmodified SuperTuxKart streamed over MoonlightWeb (`https
 4. Wait ~1.5–2.5s (via `sleep`) and take a screenshot until the Hacienda starting grid appears (`Ready!` / `Set!` / `Go!`). Because the game starts **unpaused**:
    - Start Segment 1 with **`unpause: false`** (`driveServo({ maxDurationMs: 2400, unpause: false, label: "seg-1-start" })`).
    - All subsequent segments start from the `Paused` screen and use the default `unpause: true, pause: true`.
+
+---
+
+## 2B. Singleplayer UI & Pause Menu Quirks (Verified in Zero-Shot Runs)
+
+- **Horizontal Pause Menu (`BTN.START`)**: STK's in-race Pause bar lays out `Resume` → `Restart` → `Setup New Race` → `Exit Race` horizontally and scrolls immediately on held Left Stick `x`. Runtime `v5.0.1` always calls `resetAll()` before tapping `BTN.START`; if writing raw controller code, zero sticks before pausing.
+- **Ghost Replay Option Skips AI Karts Row**: In Singleplayer setup, toggling **`Record the race for ghost replay`** (`ON`) automatically sets **`Number of AI karts`** to `0` and disables that row, so vertical `pulseStick` navigation skips straight past the disabled AI count row.
 
 ---
 

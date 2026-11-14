@@ -7,12 +7,12 @@
 - Never patch game binaries, read game memory, or query internal engine state.
 
 ## Repository Structure & Commands
-- `packages/runtime/`: Injected browser runtime (`window.gameplayApi` `v5.0.0`) providing virtual Xbox-layout gamepad control, 30 Hz biome-agnostic Pure-Pursuit pixel servoing (`driveServo`, default `7000ms` adaptive horizon), non-blocking `280×210` Depth Anything V2 Small Web Worker inference (`initDepthEngine` / `getDepthStatus`), 30 Hz temporal minimap odometry (`MinimapTracker`), local `autoUnwedge` stuck recovery, post-race finish detection (`stopOnRaceFinish`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), road-model reset (`resetRoadModel`), and annotated 4×2 contact-sheet overlays.
+- `packages/runtime/`: Injected browser runtime (`window.gameplayApi` `v5.0.1`) providing virtual Xbox-layout gamepad control, 30 Hz biome-agnostic Pure-Pursuit pixel servoing (`driveServo`, default `7000ms` adaptive horizon), non-blocking `280×210` Depth Anything V2 Small Web Worker inference (`initDepthEngine` / `getDepthStatus`), 30 Hz temporal minimap odometry (`MinimapTracker` with bounded-width cobblestone stroke filtering), local `autoUnwedge` stuck recovery (including micro-jitter obstacle pinning), post-race finish detection (`stopOnRaceFinish`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), road-model reset (`resetRoadModel`), and annotated 4×2 contact-sheet overlays.
 - `scripts/build-depth-bundle.ts`: Packages `onnxruntime-web` WASM + cached Depth Anything V2 Small weights into gitignored `.cache/gameplay-depth-bundle.js` during `bun run build`.
 - `packages/perception/`: Offline third-party 3D depth & OpenCV analyzer CLI (`bun run perceive <screenshot.jpg>`) powered by quantized **Depth Anything V2 Small** (`@huggingface/transformers`), **OpenCV 5.0** (`@techstark/opencv-js`), and **`sharp`** (runs inside Standard Sandbox Mode with `BypassSandbox: false`).
 - `packages/browsertool/`: Zero-dependency Bun CLI for raw Chrome DevTools Protocol (`ws://127.0.0.1:9222`) when running outside network-isolated sandboxes.
 - `skills/gameplay/`: Progressive-disclosure gameplay skill ([SKILL.md](skills/gameplay/SKILL.md)) and game-specific runbooks ([supertuxkart.md](skills/gameplay/references/supertuxkart.md)).
-- `docs/lessons-learned.md`: Empirical post-mortem across five SuperTuxKart runs (four Tutorial iterations + Run 5 zero-shot Singleplayer *Antediluvian Abyss*), causal attribution, step-sizing analysis, real-time loop tradeoffs, and foundation-model caveats.
+- `docs/lessons-learned.md`: Empirical post-mortem across six SuperTuxKart runs (four Tutorial iterations + Run 5 zero-shot *Antediluvian Abyss* + Run 6 zero-shot *Blackhill Mansion* & `v5.0.1` fixes), causal attribution, step-sizing analysis, real-time loop tradeoffs, and foundation-model caveats.
 
 Build and test inside the standard sandbox before committing:
 ```sh

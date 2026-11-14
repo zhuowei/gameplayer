@@ -6,7 +6,7 @@ const gamepad = createGamepadController();
 const orchestrator = createGameplayOrchestrator(gamepad);
 
 const gameplayApi = {
-  version: "5.0.0",
+  version: "5.0.1",
   BTN,
   simGamepad: gamepad.simGamepad,
   setStick: gamepad.setStick,
@@ -30,5 +30,5 @@ const gameplayApi = {
 
 (window as unknown as Record<string, unknown>)["gameplayApi"] = gameplayApi;
 console.log(
-  "Gameplay - hooked v5 (in-page 3D depth worker + 30Hz minimap odometry + autoUnwedge + finish detection)",
+  "Gameplay - hooked v5.0.1 (in-page 3D depth worker + 30Hz minimap odometry + autoUnwedge + finish detection)",
 );
