@@ -30,6 +30,7 @@ export interface FrameSample {
   bannerDelta: number;
   redAlertRatio: number;
   roadOffsetX: number;
+  roadCurvature?: number;
   roadConfidence: number;
 }
 
@@ -42,9 +43,9 @@ export interface ChunkOptions {
   pause?: boolean;
   /** Button index to tap for pause (default: 9 / Start) */
   pauseButton?: number;
-  /** Settle wait after unpause before actions begin (default: 120ms) */
+  /** Settle wait after unpause before actions begin (default: 220ms) */
   unpauseSettleMs?: number;
-  /** Settle wait after pause before ending capture (default: 100ms) */
+  /** Settle wait after pause before ending capture (default: 150ms) */
   pauseSettleMs?: number;
   /** Sample interval in ms during active window (default: 140ms) */
   sampleIntervalMs?: number;
@@ -79,8 +80,14 @@ export interface DriveServoOptions extends ChunkOptions {
   gasButton?: number;
   /** Automatically feather throttle when steering hard into curves (default: true) */
   throttleModulation?: boolean;
-  /** Optional steering bias added to visual target offset (-1..1) */
+  /** Tap brief brake pulses when high-speed hard cornering exceeds turning radius (default: true) */
+  autoCornerBrake?: boolean;
+  /** Optional additive steering bias (-1..1) */
   steerBias?: number;
+  /** Optional 3D free-space / minimap steering target (-1..1) from host `perceive` CLI */
+  depthSteerHint?: number;
+  /** Blend weight [0..1] for depthSteerHint when provided (default: 0.30) */
+  depthHintWeight?: number;
   /** Stop early if top HUD banner changes sharply after cooldown (default: false) */
   stopOnBannerChange?: boolean;
   bannerDeltaThreshold?: number;
@@ -106,6 +113,7 @@ export interface ChunkResult {
   maxRedAlertRatio: number;
   avgRoadConfidence: number;
   meanSteerX: number;
+  meanCurvature: number;
   stuckDetected: boolean;
   finalState: GamepadSnapshot;
   /** Compact JPEG data URL of the annotated contact sheet (if requested/created) */

@@ -7,10 +7,11 @@
 - Never patch game binaries, read game memory, or query internal engine state.
 
 ## Repository Structure & Commands
-- `packages/runtime/`: Injected browser runtime (`window.gameplayApi`) providing virtual Xbox-layout gamepad control, 30 Hz pixel servoing (`driveServo`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), and annotated 4×2 contact-sheet overlays.
+- `packages/runtime/`: Injected browser runtime (`window.gameplayApi` `v4.0.0`) providing virtual Xbox-layout gamepad control, 30 Hz biome-agnostic Pure-Pursuit pixel servoing (`driveServo`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), road-model reset (`resetRoadModel`), and annotated 4×2 contact-sheet overlays.
+- `packages/perception/`: Offline third-party 3D depth & OpenCV analyzer CLI (`bun run perceive <screenshot.jpg>`) powered by quantized **Depth Anything V2 Small** (`@huggingface/transformers`), **OpenCV 5.0** (`@techstark/opencv-js`), and **`sharp`** (runs inside Standard Sandbox Mode with `BypassSandbox: false`).
 - `packages/browsertool/`: Zero-dependency Bun CLI for raw Chrome DevTools Protocol (`ws://127.0.0.1:9222`) when running outside network-isolated sandboxes.
 - `skills/gameplay/`: Progressive-disclosure gameplay skill ([SKILL.md](skills/gameplay/SKILL.md)) and game-specific runbooks ([supertuxkart.md](skills/gameplay/references/supertuxkart.md)).
-- `docs/lessons-learned.md`: Empirical post-mortem across four SuperTuxKart runs (through Runtime v3), CV/control failure analyses, and generalization roadmap.
+- `docs/lessons-learned.md`: Empirical post-mortem across four SuperTuxKart runs, causal attribution, third-party library tradeoffs, and foundation-model caveats.
 
 Build and test inside the standard sandbox before committing:
 ```sh

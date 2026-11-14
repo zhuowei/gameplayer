@@ -343,4 +343,105 @@ describe("vision & PID servo", () => {
     const chevRes = analyzeRgbaFrame(chevronFrame, null, w, h);
     expect(chevRes.redAlertRatio).toBeLessThan(0.01);
   });
+
+  test("generalizes zero-shot to bright snow/ice tracks and learns contrastive off-road shoulders", () => {
+    const w = 160;
+    const h = 120;
+    // Centered bright snowy road [218, 226, 236] flanked by dark slate rock/pine shoulders [55, 62, 58]
+    const snowStraight = makeTestFrame(w, h, (x, y) => {
+      if (y < 40) return [95, 155, 235]; // sky
+      if (x >= 36 && x <= 124) return [218, 226, 236]; // snow road under wheels & lookahead
+      return [55, 62, 58]; // dark pine/slate shoulder
+    });
+
+    const seedRes = analyzeRgbaFrame(snowStraight, null, w, h, createInitialRoadModel());
+    expect(seedRes.updatedRoadModel.initialized).toBe(true);
+    expect(seedRes.updatedRoadModel.r).toBeGreaterThan(205);
+    expect(seedRes.roadConfidence).toBeGreaterThan(0.65);
+    expect(seedRes.updatedRoadModel.shoulderInitialized).toBe(true);
+
+    // Snow track curving sharply left in far lookahead band -> negative roadOffsetX & negative roadCurvature
+    const snowCurveLeft = makeTestFrame(w, h, (x, y) => {
+      if (y < 40) return [95, 155, 235];
+      const center = y < 58 ? w * 0.28 : w * 0.48;
+      if (Math.abs(x - center) < 24) return [218, 226, 236];
+      return [55, 62, 58];
+    });
+    const leftRes = analyzeRgbaFrame(snowCurveLeft, null, w, h, seedRes.updatedRoadModel);
+    expect(leftRes.roadOffsetX).toBeLessThan(-0.2);
+    expect(leftRes.roadCurvature).toBeLessThan(-0.15);
+  });
+
+  test("mode-seeking road corridor avoids steering into a dead-center obstacle", () => {
+    const w = 160;
+    const h = 120;
+    const asphaltModel = { r: 95, g: 98, b: 102, initialized: true };
+    // Wide asphalt road with a bright orange/dark crate dead-center (x: 72..88) and slightly wider right lane
+    const splitObstacleFrame = makeTestFrame(w, h, (x, y) => {
+      if (y < 40) return [115, 180, 242];
+      if (x < 24 || x > 142) return [40, 145, 45]; // outer grass
+      if (y >= 46 && y <= 74 && x >= 70 && x <= 88) return [210, 65, 20]; // center obstacle
+      return [95, 98, 102]; // grey asphalt on both left (24..70) and wider right (88..142)
+    });
+
+    const res = analyzeRgbaFrame(splitObstacleFrame, null, w, h, asphaltModel);
+    // Mode-seeking picks the wider contiguous right corridor (> +0.25) instead of averaging left & right to 0.0
+    expect(res.roadOffsetX).toBeGreaterThan(0.25);
+  });
+
+  test("driveServo supports depthSteerHint blending and resetRoadModel()", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
+    mockWindow.setTimeout = ((cb: TimerHandler) =>
+      globalThis.setTimeout(cb, 2)) as unknown as typeof window.setTimeout;
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+
+    let resetCalled = 0;
+    const fakeCapture = {
+      resetTracking() {},
+      resetRoadModel() {
+        resetCalled++;
+      },
+      findVideoSurface: () => ({}) as HTMLCanvasElement,
+      sampleAnalysis: () => ({
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadCurvature: 0,
+        roadConfidence: 0.85,
+        updatedRoadModel: createInitialRoadModel(),
+      }),
+      captureTile: (_s: unknown, tMs: number, axes: number[], buttons: number[]) => ({
+        tMs,
+        width: 320,
+        height: 240,
+        canvas: {} as HTMLCanvasElement,
+        axes,
+        buttons,
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadCurvature: 0,
+        roadConfidence: 0.85,
+      }),
+      captureFullFrame: () => ({}) as HTMLCanvasElement,
+    } as unknown as VideoCaptureEngine;
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture);
+    orch.resetRoadModel();
+    expect(resetCalled).toBe(1);
+
+    const res = await orch.driveServo({
+      maxDurationMs: 45,
+      tickMs: 12,
+      depthSteerHint: 0.6,
+      unpauseSettleMs: 5,
+      pauseSettleMs: 5,
+      showSheetOverlay: false,
+      label: "seg-depth-guided",
+    });
+    expect(res.ok).toBe(true);
+    expect(res.meanSteerX).toBeGreaterThan(0);
+  });
 });

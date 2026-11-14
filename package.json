@@ -4,11 +4,17 @@
   "description": "",
   "scripts": {
     "build": "bun build --outfile=packages/runtime/gameplay-runtime.js --format=iife packages/runtime/index.ts",
+    "perceive": "bun packages/perception/index.ts",
     "test": "bun test"
   },
   "author": "",
   "license": "0BSD",
   "workspace": [
     "packages/*"
-  ]
+  ],
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "@techstark/opencv-js": "^5.0.0-release.1",
+    "sharp": "^0.35.5"
+  }
 }

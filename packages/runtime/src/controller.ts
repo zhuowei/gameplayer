@@ -59,6 +59,7 @@ export interface GameplayOrchestrator {
   driveServo(options?: DriveServoOptions): Promise<ChunkResult>;
   smartRescue(options?: ChunkOptions): Promise<ChunkResult>;
   hideOverlay(): void;
+  resetRoadModel(): void;
   inspectFrame(): {
     foundSurface: boolean;
     width: number;
@@ -67,6 +68,7 @@ export interface GameplayOrchestrator {
     bannerDelta: number;
     redAlertRatio: number;
     roadOffsetX: number;
+    roadCurvature: number;
     roadConfidence: number;
   };
 }
@@ -80,6 +82,13 @@ export function createGameplayOrchestrator(
   function getEngine(): VideoCaptureEngine {
     if (!engine) engine = new VideoCaptureEngine();
     return engine;
+  }
+
+  function resetRoadModel(): void {
+    const eng = getEngine();
+    if (typeof eng.resetRoadModel === "function") {
+      eng.resetRoadModel();
+    }
   }
 
   function summarizeSamples(
@@ -101,6 +110,7 @@ export function createGameplayOrchestrator(
     let maxRedAlertRatio = 0;
     let sumConf = 0;
     let sumSteer = 0;
+    let sumCurvature = 0;
 
     for (let i = 0; i < count; i++) {
       const s = samples[i];
@@ -112,11 +122,13 @@ export function createGameplayOrchestrator(
       if (s.redAlertRatio > maxRedAlertRatio) maxRedAlertRatio = s.redAlertRatio;
       sumConf += s.roadConfidence;
       sumSteer += s.axes[0] ?? 0;
+      sumCurvature += s.roadCurvature ?? 0;
     }
 
     const avgMotion = count > 1 ? sumMotion / (count - 1) : 0;
     const avgRoadConfidence = count > 0 ? sumConf / count : 0;
     const meanSteerX = count > 0 ? sumSteer / count : 0;
+    const meanCurvature = count > 0 ? sumCurvature / count : 0;
 
     let sheetDataUrl: string | undefined;
     if (count > 0 && (options.showSheetOverlay ?? true)) {
@@ -145,6 +157,7 @@ export function createGameplayOrchestrator(
       maxRedAlertRatio,
       avgRoadConfidence,
       meanSteerX,
+      meanCurvature,
       stuckDetected,
       finalState: gamepad.getState(),
       sheetDataUrl,
@@ -291,7 +304,10 @@ export function createGameplayOrchestrator(
       maxSteer = 0.95,
       gasButton = BTN.Y,
       throttleModulation = true,
+      autoCornerBrake = true,
       steerBias = 0,
+      depthSteerHint,
+      depthHintWeight = 0.3,
       stopOnBannerChange = false,
       bannerDeltaThreshold = 0.28,
       stopOnLowConfidence = true,
@@ -334,6 +350,7 @@ export function createGameplayOrchestrator(
         maxRedAlertRatio: 0,
         avgRoadConfidence: 0,
         meanSteerX: 0,
+        meanCurvature: 0,
         stuckDetected: false,
         finalState: gamepad.getState(),
       };
@@ -375,7 +392,13 @@ export function createGameplayOrchestrator(
         lastTick = now;
 
         const analysis = eng.sampleAnalysis(surface);
-        const target = clamp(analysis.roadOffsetX + steerBias, -1, 1);
+        // Feed-forward curvature anticipation + optional Depth Anything V2 / OpenCV hint
+        let visualTarget = analysis.roadOffsetX + (analysis.roadCurvature ?? 0) * 0.18;
+        if (typeof depthSteerHint === "number" && Number.isFinite(depthSteerHint)) {
+          const w = clamp(depthHintWeight, 0, 1);
+          visualTarget = (1 - w) * visualTarget + w * clamp(depthSteerHint, -1, 1);
+        }
+        const target = clamp(visualTarget + steerBias, -1, 1);
         const pid = computePidSteer(
           target,
           pidState,
@@ -388,18 +411,31 @@ export function createGameplayOrchestrator(
         pidState = pid.nextState;
         gamepad.setStick(0, pid.steer, 0);
 
-        // Curvature-coupled throttle modulation: ease gas duty cycle on tight turns
-        // after initial acceleration settle so the kart tucks into corners instead of understeering wide.
+        // Curvature-coupled throttle + brief corner brake pulse on sharp curves
         if (throttleModulation && elapsed > 380) {
           const absSteer = Math.abs(pid.steer);
-          if (absSteer > 0.68) {
+          const absCurv = Math.abs(analysis.roadCurvature ?? 0);
+          if (
+            autoCornerBrake &&
+            elapsed > 650 &&
+            absSteer > 0.78 &&
+            absCurv > 0.22 &&
+            analysis.motionScore > 0.025
+          ) {
+            gamepad.setButton(gasButton, 0);
+            gamepad.setButton(BTN.X, tickIndex % 3 === 0 ? 1 : 0);
+          } else if (absSteer > 0.68 || absCurv > 0.3) {
+            gamepad.setButton(BTN.X, 0);
             gamepad.setButton(gasButton, tickIndex % 3 === 0 ? 1 : 0);
-          } else if (absSteer > 0.44) {
+          } else if (absSteer > 0.44 || absCurv > 0.18) {
+            gamepad.setButton(BTN.X, 0);
             gamepad.setButton(gasButton, tickIndex % 2 === 0 ? 1 : 0);
           } else {
+            gamepad.setButton(BTN.X, 0);
             gamepad.setButton(gasButton, 1);
           }
         } else {
+          gamepad.setButton(BTN.X, 0);
           gamepad.setButton(gasButton, 1);
         }
         tickIndex++;
@@ -530,6 +566,7 @@ export function createGameplayOrchestrator(
         bannerDelta: 0,
         redAlertRatio: 0,
         roadOffsetX: 0,
+        roadCurvature: 0,
         roadConfidence: 0,
       };
     }
@@ -543,6 +580,7 @@ export function createGameplayOrchestrator(
       bannerDelta: analysis.bannerDelta,
       redAlertRatio: analysis.redAlertRatio,
       roadOffsetX: analysis.roadOffsetX,
+      roadCurvature: analysis.roadCurvature,
       roadConfidence: analysis.roadConfidence,
     };
   }
@@ -552,6 +590,7 @@ export function createGameplayOrchestrator(
     driveServo,
     smartRescue,
     hideOverlay: hideSheetOverlay,
+    resetRoadModel,
     inspectFrame,
   };
 }

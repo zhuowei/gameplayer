@@ -6,7 +6,7 @@ const gamepad = createGamepadController();
 const orchestrator = createGameplayOrchestrator(gamepad);
 
 const gameplayApi = {
-  version: "3.0.0",
+  version: "4.0.0",
   BTN,
   simGamepad: gamepad.simGamepad,
   setStick: gamepad.setStick,
@@ -22,8 +22,11 @@ const gameplayApi = {
   driveServo: orchestrator.driveServo,
   smartRescue: orchestrator.smartRescue,
   hideOverlay: hideSheetOverlay,
+  resetRoadModel: orchestrator.resetRoadModel,
   inspectFrame: orchestrator.inspectFrame,
 };
 
 (window as unknown as Record<string, unknown>)["gameplayApi"] = gameplayApi;
-console.log("Gameplay - hooked v3 (gamepad + multi-cue servo + pre-pause contact-sheet)");
+console.log(
+  "Gameplay - hooked v4 (biome-agnostic pure-pursuit servo + contrastive shoulder + pre-pause contact-sheet)",
+);

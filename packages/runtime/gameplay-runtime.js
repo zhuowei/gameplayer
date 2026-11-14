@@ -170,9 +170,20 @@
     { label: "LOOKAHEAD & ALERT", x: 0.22, y: 0.22, w: 0.56, h: 0.38 }
   ];
   function createInitialRoadModel() {
-    return { r: 125, g: 118, b: 108, initialized: false };
+    return {
+      r: 125,
+      g: 118,
+      b: 108,
+      initialized: false,
+      shoulderR: 0,
+      shoulderG: 0,
+      shoulderB: 0,
+      shoulderInitialized: false
+    };
   }
-  function computeSandPenalty(r, g, b) {
+  function computeSandPenalty(r, g, b, roadLum) {
+    if (roadLum >= 175)
+      return 0;
     const lum = (r + g + b) / 3;
     const yellowExcess = (r + g) * 0.5 - b;
     const rg = r - g;
@@ -183,20 +194,64 @@
     }
     return 0;
   }
-  function isCandidateRoadSeedPixel(r, g, b) {
-    const lum = (r + g + b) / 3;
-    if (lum < 28 || lum > 188)
-      return false;
-    const greenExcess = g - Math.max(r, b);
-    if (greenExcess > 12)
-      return false;
-    if (b - r > 20 && lum > 110)
-      return false;
-    if (computeSandPenalty(r, g, b) > 0.15)
-      return false;
-    if (r - g > 68)
-      return false;
-    return true;
+  function rgbColorDistance(r1, g1, b1, r2, g2, b2) {
+    const rg1 = r1 - g1;
+    const gb1 = g1 - b1;
+    const lum1 = (r1 + g1 + b1) / 3;
+    const rg2 = r2 - g2;
+    const gb2 = g2 - b2;
+    const lum2 = (r2 + g2 + b2) / 3;
+    const chromaDiff = (Math.abs(rg1 - rg2) + Math.abs(gb1 - gb2)) / 510;
+    const lumDiff = Math.abs(lum1 - lum2) / 255;
+    return chromaDiff * 0.58 + lumDiff * 0.48;
+  }
+  function computeCorridorCentroid(scores, navThreshold = 0.45) {
+    const numCols = scores.length;
+    let maxScore = 0;
+    let totalActiveCols = 0;
+    let totalExcessSum = 0;
+    for (let c = 0;c < numCols; c++) {
+      if (scores[c] > maxScore)
+        maxScore = scores[c];
+      const ex = Math.max(0, scores[c] - navThreshold);
+      if (ex > 0) {
+        totalActiveCols++;
+        totalExcessSum += ex / (1 - navThreshold);
+      }
+    }
+    let bestRunScore = -1;
+    let bestOffsetX = 0;
+    let c = 0;
+    while (c < numCols) {
+      if (scores[c] <= navThreshold) {
+        c++;
+        continue;
+      }
+      let end = c;
+      let wSum = 0;
+      let wxSum = 0;
+      let runScore = 0;
+      while (end < numCols && scores[end] > navThreshold) {
+        const ex = scores[end] - navThreshold;
+        const normX = (end + 0.5) / numCols * 2 - 1;
+        const w = ex * ex;
+        wSum += w;
+        wxSum += w * normX;
+        runScore += scores[end] * scores[end] * (1 - 0.08 * Math.abs(normX));
+        end++;
+      }
+      if (runScore > bestRunScore && wSum > 0.000001) {
+        bestRunScore = runScore;
+        bestOffsetX = wxSum / wSum;
+      }
+      c = end;
+    }
+    return {
+      offsetX: bestOffsetX,
+      activeCols: totalActiveCols,
+      meanStrength: totalActiveCols > 0 ? totalExcessSum / totalActiveCols : 0,
+      maxScore
+    };
   }
   function analyzeRgbaFrame(rgba, prevRgba, width, height, roadModel = createInitialRoadModel()) {
     let motionSum = 0;
@@ -221,11 +276,16 @@
     let bannerChanged = 0;
     let bannerPixels = 0;
     let alertScore = 0;
+    let skySampleR = 0;
+    let skySampleG = 0;
+    let skySampleB = 0;
+    let skySampleCnt = 0;
     {
       const xStart = Math.floor(width * 0.15);
       const xEnd = Math.floor(width * 0.85);
       const yStart = Math.floor(height * 0.05);
       const yEnd = Math.floor(height * 0.35);
+      const skyYEnd = Math.floor(height * 0.16);
       const wwX0 = Math.floor(width * 0.28);
       const wwX1 = Math.floor(width * 0.72);
       const wwY0 = Math.floor(height * 0.22);
@@ -258,6 +318,12 @@
           const r = rgba[idx];
           const g = rgba[idx + 1];
           const b = rgba[idx + 2];
+          if (y <= skyYEnd) {
+            skySampleR += r;
+            skySampleG += g;
+            skySampleB += b;
+            skySampleCnt++;
+          }
           if (r > 175 && r - g > 65 && r - b > 65) {
             alertScore += 1;
           } else if (y >= wwY0 && x >= wwX0 && x <= wwX1 && r >= 210 && g >= 95 && g <= 185 && b <= 55 && r - g >= 30 && r - b >= 155 && hasDarkOutlineNeighbor(x, y)) {
@@ -276,12 +342,12 @@
     }
     const bannerDelta = bannerPixels > 0 ? bannerChanged / bannerPixels : 0;
     const redAlertRatio = bannerPixels > 0 ? Math.min(1, alertScore / bannerPixels) : 0;
-    let seedR = 0;
-    let seedG = 0;
-    let seedB = 0;
-    let seedValid = 0;
+    const meanSkyR = skySampleCnt > 0 ? skySampleR / skySampleCnt : 115;
+    const meanSkyG = skySampleCnt > 0 ? skySampleG / skySampleCnt : 175;
+    const meanSkyB = skySampleCnt > 0 ? skySampleB / skySampleCnt : 240;
+    const wheelPixels = [];
     let seedTotal = 0;
-    const samplePatch = (x0Frac, x1Frac, y0Frac, y1Frac) => {
+    const collectPatch = (x0Frac, x1Frac, y0Frac, y1Frac) => {
       const xs = Math.floor(width * x0Frac);
       const xe = Math.floor(width * x1Frac);
       const ys = Math.floor(height * y0Frac);
@@ -290,24 +356,52 @@
         for (let x = xs;x < xe; x += 2) {
           seedTotal++;
           const idx = (y * width + x) * 4;
-          const r = rgba[idx];
-          const g = rgba[idx + 1];
-          const b = rgba[idx + 2];
-          if (isCandidateRoadSeedPixel(r, g, b)) {
-            seedR += r;
-            seedG += g;
-            seedB += b;
-            seedValid++;
-          }
+          wheelPixels.push([rgba[idx], rgba[idx + 1], rgba[idx + 2]]);
         }
       }
     };
-    samplePatch(0.28, 0.39, 0.64, 0.75);
-    samplePatch(0.61, 0.72, 0.64, 0.75);
-    samplePatch(0.44, 0.56, 0.47, 0.52);
+    collectPatch(0.28, 0.39, 0.64, 0.75);
+    collectPatch(0.61, 0.72, 0.64, 0.75);
+    collectPatch(0.44, 0.56, 0.47, 0.52);
+    let seedR = 0;
+    let seedG = 0;
+    let seedB = 0;
+    let seedValid = 0;
+    for (const [r, g, b] of wheelPixels) {
+      const lum = (r + g + b) / 3;
+      if (lum < 22 || lum > 242)
+        continue;
+      if (b - r > 22 && lum > 110 && rgbColorDistance(r, g, b, meanSkyR, meanSkyG, meanSkyB) < 0.08) {
+        continue;
+      }
+      if (r - g > 72 && r > 180)
+        continue;
+      if (roadModel.initialized) {
+        const modelLum = (roadModel.r + roadModel.g + roadModel.b) / 3;
+        const modelGreen = roadModel.g - Math.max(roadModel.r, roadModel.b);
+        if (modelGreen < 8 && g - Math.max(r, b) > 16)
+          continue;
+        if (computeSandPenalty(r, g, b, modelLum) > 0.15)
+          continue;
+        if (roadModel.shoulderInitialized && rgbColorDistance(r, g, b, roadModel.shoulderR ?? 0, roadModel.shoulderG ?? 0, roadModel.shoulderB ?? 0) < 0.1) {
+          continue;
+        }
+      } else {
+        const greenExcess = g - Math.max(r, b);
+        if (greenExcess > 26)
+          continue;
+        if (computeSandPenalty(r, g, b, 120) > 0.15)
+          continue;
+      }
+      seedR += r;
+      seedG += g;
+      seedB += b;
+      seedValid++;
+    }
     let evalModel = { ...roadModel };
     if (!evalModel.initialized && seedValid >= 8) {
       evalModel = {
+        ...evalModel,
         r: seedR / seedValid,
         g: seedG / seedValid,
         b: seedB / seedValid,
@@ -315,59 +409,76 @@
       };
     }
     const numCols = 24;
-    const rawColScores = new Float64Array(numCols);
-    const lookRows = [
-      Math.floor(height * 0.45),
-      Math.floor(height * 0.52),
-      Math.floor(height * 0.59)
-    ];
-    const upperWallRows = [
-      Math.floor(height * 0.2),
-      Math.floor(height * 0.28)
-    ];
-    const refRG = evalModel.r - evalModel.g;
-    const refGB = evalModel.g - evalModel.b;
+    const rawFarScores = new Float64Array(numCols);
+    const rawNearScores = new Float64Array(numCols);
+    const rawCombinedScores = new Float64Array(numCols);
+    const farRows = [Math.floor(height * 0.43), Math.floor(height * 0.48)];
+    const nearRows = [Math.floor(height * 0.53), Math.floor(height * 0.59)];
+    const allLookRows = [...farRows, ...nearRows];
+    const upperWallRows = [Math.floor(height * 0.2), Math.floor(height * 0.28)];
     const refLum = (evalModel.r + evalModel.g + evalModel.b) / 3;
+    const refGreen = evalModel.g - Math.max(evalModel.r, evalModel.b);
     const xMargin = Math.floor(width * 0.08);
     const spanW = width - 2 * xMargin;
+    let outerEdgeR = 0;
+    let outerEdgeG = 0;
+    let outerEdgeB = 0;
+    let outerEdgeCnt = 0;
     for (let c = 0;c < numCols; c++) {
       const x0 = xMargin + Math.floor(c / numCols * spanW);
       const x1 = Math.max(x0 + 1, xMargin + Math.floor((c + 1) / numCols * spanW));
-      let colScoreSum = 0;
-      let colSamples = 0;
+      let farSum = 0;
+      let farCnt = 0;
+      let nearSum = 0;
+      let nearCnt = 0;
       let midR = 0;
       let midG = 0;
       let midB = 0;
       let midCount = 0;
-      for (let rIdx = 0;rIdx < lookRows.length; rIdx++) {
-        const y = lookRows[rIdx];
+      for (let rIdx = 0;rIdx < allLookRows.length; rIdx++) {
+        const y = allLookRows[rIdx];
+        const isFar = rIdx < farRows.length;
         for (let x = x0;x < x1; x++) {
           const idx = (y * width + x) * 4;
           const r = rgba[idx];
           const g = rgba[idx + 1];
           const b = rgba[idx + 2];
-          if (rIdx < 2) {
+          if (rIdx <= 2) {
             midR += r;
             midG += g;
             midB += b;
             midCount++;
           }
-          const rg = r - g;
-          const gb = g - b;
+          if (c <= 1 || c >= numCols - 2) {
+            outerEdgeR += r;
+            outerEdgeG += g;
+            outerEdgeB += b;
+            outerEdgeCnt++;
+          }
           const lum = (r + g + b) / 3;
-          const chromaDiff = (Math.abs(rg - refRG) + Math.abs(gb - refGB)) / 510;
-          const lumDiff = Math.abs(lum - refLum) / 255;
-          const colorDist = chromaDiff * 0.68 + lumDiff * 0.32;
+          const colorDist = rgbColorDistance(r, g, b, evalModel.r, evalModel.g, evalModel.b);
           const rightIdx = (y * width + Math.min(width - 1, x + 1)) * 4;
           const edge = (Math.abs(r - rgba[rightIdx]) + Math.abs(g - rgba[rightIdx + 1]) + Math.abs(b - rgba[rightIdx + 2])) / (3 * 255);
-          const greenPenalty = Math.max(0, (g - Math.max(r, b) - 10) / 55);
-          const skyPenalty = b - r > 22 && lum > 125 ? 0.85 : 0;
-          const redWallPenalty = r - g > 65 ? 0.55 : 0;
-          const sandPenalty = computeSandPenalty(r, g, b);
-          const glareWallPenalty = lum > 192 ? Math.min(0.75, (lum - 192) / 35) : 0;
-          const pixelScore = Math.max(0, 1 - (colorDist * 2.05 + edge * 0.85 + greenPenalty + skyPenalty + redWallPenalty + sandPenalty + glareWallPenalty));
-          colScoreSum += pixelScore;
-          colSamples++;
+          const greenPenalty = refGreen >= 8 ? 0 : Math.max(0, (g - Math.max(r, b) - 12) / 55);
+          const skyPenalty = b - r > 22 && lum > 125 && refLum < 185 ? 0.85 : 0;
+          const redWallPenalty = r - g > 68 && evalModel.r - evalModel.g < 45 ? 0.55 : 0;
+          const sandPenalty = computeSandPenalty(r, g, b, refLum);
+          const glareWallPenalty = refLum < 175 && lum > 194 ? Math.min(0.75, (lum - 194) / 35) : 0;
+          let shoulderPenalty = 0;
+          if (evalModel.shoulderInitialized) {
+            const distToShoulder = rgbColorDistance(r, g, b, evalModel.shoulderR ?? 0, evalModel.shoulderG ?? 0, evalModel.shoulderB ?? 0);
+            if (distToShoulder < colorDist && distToShoulder < 0.14) {
+              shoulderPenalty = 0.65 * (1 - distToShoulder / 0.14);
+            }
+          }
+          const pixelScore = Math.max(0, 1 - (colorDist * 2.15 + edge * 0.85 + greenPenalty + skyPenalty + redWallPenalty + sandPenalty + glareWallPenalty + shoulderPenalty));
+          if (isFar) {
+            farSum += pixelScore;
+            farCnt++;
+          } else {
+            nearSum += pixelScore;
+            nearCnt++;
+          }
         }
       }
       let wallPenalty = 0;
@@ -404,39 +515,37 @@
           }
         }
       }
-      const baseColScore = colSamples > 0 ? colScoreSum / colSamples : 0;
-      rawColScores[c] = Math.max(0, baseColScore - wallPenalty);
+      const fScore = farCnt > 0 ? Math.max(0, farSum / farCnt - wallPenalty) : 0;
+      const nScore = nearCnt > 0 ? Math.max(0, nearSum / nearCnt - wallPenalty) : 0;
+      rawFarScores[c] = fScore;
+      rawNearScores[c] = nScore;
+      rawCombinedScores[c] = 0.46 * fScore + 0.54 * nScore;
     }
-    const colScores = new Float64Array(numCols);
-    for (let c = 0;c < numCols; c++) {
-      const left = c > 0 ? rawColScores[c - 1] : rawColScores[c];
-      const right = c < numCols - 1 ? rawColScores[c + 1] : rawColScores[c];
-      colScores[c] = 0.25 * left + 0.5 * rawColScores[c] + 0.25 * right;
-    }
-    const navThreshold = 0.45;
-    let weightSum = 0;
-    let weightedPos = 0;
-    let activeCols = 0;
-    let activeExcessSum = 0;
-    let maxColScore = 0;
-    for (let c = 0;c < numCols; c++) {
-      const s = colScores[c];
-      if (s > maxColScore)
-        maxColScore = s;
-      const excess = Math.max(0, s - navThreshold);
-      if (excess > 0) {
-        activeCols++;
-        activeExcessSum += excess / (1 - navThreshold);
-        const normX = (c + 0.5) / numCols * 2 - 1;
-        const w = excess * excess;
-        weightSum += w;
-        weightedPos += w * normX;
+    const smoothCols = (arr) => {
+      const out = new Float64Array(numCols);
+      for (let c = 0;c < numCols; c++) {
+        const left = c > 0 ? arr[c - 1] : arr[c];
+        const right = c < numCols - 1 ? arr[c + 1] : arr[c];
+        out[c] = 0.25 * left + 0.5 * arr[c] + 0.25 * right;
       }
+      return out;
+    };
+    const farSmooth = smoothCols(rawFarScores);
+    const nearSmooth = smoothCols(rawNearScores);
+    const combinedSmooth = smoothCols(rawCombinedScores);
+    const farStats = computeCorridorCentroid(farSmooth, 0.45);
+    const nearStats = computeCorridorCentroid(nearSmooth, 0.45);
+    const combStats = computeCorridorCentroid(combinedSmooth, 0.45);
+    let roadOffsetX = combStats.offsetX;
+    let roadCurvature = 0;
+    if (farStats.activeCols >= 2 && nearStats.activeCols >= 2) {
+      roadOffsetX = 0.52 * nearStats.offsetX + 0.48 * farStats.offsetX;
+      roadCurvature = farStats.offsetX - nearStats.offsetX;
+    } else if (farStats.activeCols >= 2 && nearStats.activeCols === 0) {
+      roadOffsetX = farStats.offsetX;
     }
-    const roadOffsetX = weightSum > 0.0001 ? weightedPos / weightSum : 0;
-    const widthSupport = Math.min(1, activeCols / 6);
-    const meanActiveStrength = activeCols > 0 ? activeExcessSum / activeCols : 0;
-    const roadConfidence = activeCols === 0 ? maxColScore * 0.25 : Math.min(1, widthSupport * (0.35 + 0.65 * meanActiveStrength));
+    const widthSupport = Math.min(1, combStats.activeCols / 6);
+    const roadConfidence = combStats.activeCols === 0 ? combStats.maxScore * 0.25 : Math.min(1, widthSupport * (0.35 + 0.65 * combStats.meanStrength));
     let nextModel = { ...evalModel };
     const seedValidRatio = seedTotal > 0 ? seedValid / seedTotal : 0;
     if (seedValid >= 10 && seedValidRatio >= 0.4 && roadConfidence >= 0.52 && Math.abs(roadOffsetX) <= 0.36) {
@@ -444,15 +553,34 @@
       const avgG = seedG / seedValid;
       const avgB = seedB / seedValid;
       if (!roadModel.initialized) {
-        nextModel = { r: avgR, g: avgG, b: avgB, initialized: true };
+        nextModel = { ...nextModel, r: avgR, g: avgG, b: avgB, initialized: true };
       } else {
         const alpha = 0.08;
         nextModel = {
+          ...nextModel,
           r: roadModel.r * (1 - alpha) + avgR * alpha,
           g: roadModel.g * (1 - alpha) + avgG * alpha,
           b: roadModel.b * (1 - alpha) + avgB * alpha,
           initialized: true
         };
+      }
+      if (outerEdgeCnt >= 8 && roadConfidence >= 0.58 && Math.abs(roadOffsetX) <= 0.25 && combStats.activeCols <= 21) {
+        const oR = outerEdgeR / outerEdgeCnt;
+        const oG = outerEdgeG / outerEdgeCnt;
+        const oB = outerEdgeB / outerEdgeCnt;
+        if (rgbColorDistance(oR, oG, oB, nextModel.r, nextModel.g, nextModel.b) >= 0.18) {
+          if (!nextModel.shoulderInitialized) {
+            nextModel.shoulderR = oR;
+            nextModel.shoulderG = oG;
+            nextModel.shoulderB = oB;
+            nextModel.shoulderInitialized = true;
+          } else {
+            const sAlpha = 0.12;
+            nextModel.shoulderR = (nextModel.shoulderR ?? oR) * (1 - sAlpha) + oR * sAlpha;
+            nextModel.shoulderG = (nextModel.shoulderG ?? oG) * (1 - sAlpha) + oG * sAlpha;
+            nextModel.shoulderB = (nextModel.shoulderB ?? oB) * (1 - sAlpha) + oB * sAlpha;
+          }
+        }
       }
     } else if (!roadModel.initialized && roadConfidence < 0.52) {
       nextModel = { ...roadModel };
@@ -462,6 +590,7 @@
       bannerDelta,
       redAlertRatio,
       roadOffsetX,
+      roadCurvature,
       roadConfidence,
       updatedRoadModel: nextModel
     };
@@ -565,6 +694,7 @@
         bannerDelta: analysis.bannerDelta,
         redAlertRatio: analysis.redAlertRatio,
         roadOffsetX: analysis.roadOffsetX,
+        roadCurvature: analysis.roadCurvature,
         roadConfidence: analysis.roadConfidence
       };
     }
@@ -753,6 +883,12 @@
         engine = new VideoCaptureEngine;
       return engine;
     }
+    function resetRoadModel() {
+      const eng = getEngine();
+      if (typeof eng.resetRoadModel === "function") {
+        eng.resetRoadModel();
+      }
+    }
     function summarizeSamples(samples, label, stopReason, durationMs, stuckDetected, ok, error, includeSheetDataUrl = false, surface = null, options = {}) {
       const count = samples.length;
       let sumMotion = 0;
@@ -761,6 +897,7 @@
       let maxRedAlertRatio = 0;
       let sumConf = 0;
       let sumSteer = 0;
+      let sumCurvature = 0;
       for (let i = 0;i < count; i++) {
         const s = samples[i];
         if (i > 0) {
@@ -774,10 +911,12 @@
           maxRedAlertRatio = s.redAlertRatio;
         sumConf += s.roadConfidence;
         sumSteer += s.axes[0] ?? 0;
+        sumCurvature += s.roadCurvature ?? 0;
       }
       const avgMotion = count > 1 ? sumMotion / (count - 1) : 0;
       const avgRoadConfidence = count > 0 ? sumConf / count : 0;
       const meanSteerX = count > 0 ? sumSteer / count : 0;
+      const meanCurvature = count > 0 ? sumCurvature / count : 0;
       let sheetDataUrl;
       if (count > 0 && (options.showSheetOverlay ?? true)) {
         const sheet = buildContactSheetCanvas(samples, surface, { label, stopReason, durationMs, avgMotion, avgRoadConfidence }, options.crops ?? DEFAULT_STK_CROPS);
@@ -799,6 +938,7 @@
         maxRedAlertRatio,
         avgRoadConfidence,
         meanSteerX,
+        meanCurvature,
         stuckDetected,
         finalState: gamepad.getState(),
         sheetDataUrl
@@ -909,7 +1049,10 @@
         maxSteer = 0.95,
         gasButton = BTN.Y,
         throttleModulation = true,
+        autoCornerBrake = true,
         steerBias = 0,
+        depthSteerHint,
+        depthHintWeight = 0.3,
         stopOnBannerChange = false,
         bannerDeltaThreshold = 0.28,
         stopOnLowConfidence = true,
@@ -951,6 +1094,7 @@
           maxRedAlertRatio: 0,
           avgRoadConfidence: 0,
           meanSteerX: 0,
+          meanCurvature: 0,
           stuckDetected: false,
           finalState: gamepad.getState()
         };
@@ -984,20 +1128,33 @@
           const dtMs = Math.max(10, now - lastTick);
           lastTick = now;
           const analysis = eng.sampleAnalysis(surface);
-          const target = clamp(analysis.roadOffsetX + steerBias, -1, 1);
+          let visualTarget = analysis.roadOffsetX + (analysis.roadCurvature ?? 0) * 0.18;
+          if (typeof depthSteerHint === "number" && Number.isFinite(depthSteerHint)) {
+            const w = clamp(depthHintWeight, 0, 1);
+            visualTarget = (1 - w) * visualTarget + w * clamp(depthSteerHint, -1, 1);
+          }
+          const target = clamp(visualTarget + steerBias, -1, 1);
           const pid = computePidSteer(target, pidState, dtMs / 1000, kp, kd, maxSteer, 5.5);
           pidState = pid.nextState;
           gamepad.setStick(0, pid.steer, 0);
           if (throttleModulation && elapsed > 380) {
             const absSteer = Math.abs(pid.steer);
-            if (absSteer > 0.68) {
+            const absCurv = Math.abs(analysis.roadCurvature ?? 0);
+            if (autoCornerBrake && elapsed > 650 && absSteer > 0.78 && absCurv > 0.22 && analysis.motionScore > 0.025) {
+              gamepad.setButton(gasButton, 0);
+              gamepad.setButton(BTN.X, tickIndex % 3 === 0 ? 1 : 0);
+            } else if (absSteer > 0.68 || absCurv > 0.3) {
+              gamepad.setButton(BTN.X, 0);
               gamepad.setButton(gasButton, tickIndex % 3 === 0 ? 1 : 0);
-            } else if (absSteer > 0.44) {
+            } else if (absSteer > 0.44 || absCurv > 0.18) {
+              gamepad.setButton(BTN.X, 0);
               gamepad.setButton(gasButton, tickIndex % 2 === 0 ? 1 : 0);
             } else {
+              gamepad.setButton(BTN.X, 0);
               gamepad.setButton(gasButton, 1);
             }
           } else {
+            gamepad.setButton(BTN.X, 0);
             gamepad.setButton(gasButton, 1);
           }
           tickIndex++;
@@ -1083,6 +1240,7 @@
           bannerDelta: 0,
           redAlertRatio: 0,
           roadOffsetX: 0,
+          roadCurvature: 0,
           roadConfidence: 0
         };
       }
@@ -1096,6 +1254,7 @@
         bannerDelta: analysis.bannerDelta,
         redAlertRatio: analysis.redAlertRatio,
         roadOffsetX: analysis.roadOffsetX,
+        roadCurvature: analysis.roadCurvature,
         roadConfidence: analysis.roadConfidence
       };
     }
@@ -1104,6 +1263,7 @@
       driveServo,
       smartRescue,
       hideOverlay: hideSheetOverlay,
+      resetRoadModel,
       inspectFrame
     };
   }
@@ -1112,7 +1272,7 @@
   var gamepad = createGamepadController();
   var orchestrator = createGameplayOrchestrator(gamepad);
   var gameplayApi = {
-    version: "3.0.0",
+    version: "4.0.0",
     BTN,
     simGamepad: gamepad.simGamepad,
     setStick: gamepad.setStick,
@@ -1128,8 +1288,9 @@
     driveServo: orchestrator.driveServo,
     smartRescue: orchestrator.smartRescue,
     hideOverlay: hideSheetOverlay,
+    resetRoadModel: orchestrator.resetRoadModel,
     inspectFrame: orchestrator.inspectFrame
   };
   window["gameplayApi"] = gameplayApi;
-  console.log("Gameplay - hooked v3 (gamepad + multi-cue servo + pre-pause contact-sheet)");
+  console.log("Gameplay - hooked v4 (biome-agnostic pure-pursuit servo + contrastive shoulder + pre-pause contact-sheet)");
 })();
