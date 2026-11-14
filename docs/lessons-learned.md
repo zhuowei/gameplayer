@@ -1,23 +1,24 @@
 # Gameplay Agent Lessons Learned & Generalization Guide
 
-Empirical findings from four end-to-end attempts to complete **SuperTuxKart's Tutorial** under strict black-box constraints (**video output + virtual controller input only; zero game modifications**), validating iterative upgrades from raw screenshots to **Runtime v3 (`window.gameplayApi` `3.0.0`)**, along with an honest assessment of what generalizes to future runs and other real-time games.
+Empirical findings from five end-to-end SuperTuxKart runs under strict black-box constraints (**video output + virtual controller input only; zero game modifications**): four iterative runs on the **Tutorial** (`Raw Screenshots → Video Chunks → Runtime v2 → Runtime v3`) plus a **Run 5 zero-shot test on an unseen Singleplayer track (*Antediluvian Abyss*)** using **Runtime v4 (`window.gameplayApi` `4.0.0`)** and offline **Depth Anything V2 + OpenCV (`bun run perceive`)**, along with causal attribution across tools, step sizing, and real-time loop boundaries.
 
 ---
 
-## 1. Quantitative Comparison Across Four Runs
+## 1. Quantitative Comparison Across Five Runs
 
-| Dimension | Run 1 (`43531a3d`) | Run 2 (`c0c05158`) | Run 3 (`2d0bd4ea` — Runtime v2) | Run 4 (`d19b18cf` — Runtime v3) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Model & Reasoning** | Frontier VLM | Frontier VLM | **Gemini 4 Hydrogen (Flash-tier, High)** | **Gemini 4 Carbon (Pro-tier, Medium)** |
-| **Control & Observation** | Unpaused open-loop pulses + 1 static PNG | Pause-bounded scripts + `screencast` + `ffmpeg` 8× MP4 | Pause-bounded 30 Hz `driveServo` v2 + post-pause 4×2 JPEG sheet | **30 Hz multi-cue `driveServo` v3 (sand/wall rejection + throttle mod) + pre-pause 4×2 JPEG sheet** |
-| **Menu → Grid Time** | ~19m (setup/input failures) | ~8m | ~3m (`DPAD` trial-and-error) | **2m 37s** (1 `pulseStick` + 1 `BTN.A`) |
-| **Total Wall-Clock Time** | ~55m (~36.5m driving) | ~5h 18m (~5h 10m driving) | **~46m** (~3–5s/turn Flash inference) | **~1h 47m active** (~15–25s/turn Pro inference; +10m API timeout) |
-| **Trajectory Steps** | 819 steps | 918 steps (2 compactions) | 494 steps (0 compactions) | **348 steps (0 compactions, −30% vs Run 3)** |
-| **Driving Segments** | ~110 pulses | 137 video chunks | 60 segments | **49 live segments (−18% vs Run 3)** |
-| **Mechanics Completed** | Partial (skipped 2) | **All** | **All** | **All** |
-| **Off-Road Excursions** | Frequent | Frequent (10–23 step reverse loops) | ~15 deep crashes onto sand/walls | **8 total (6 shallow shoulder grazes self-recovered on-road)** |
-| **Total Rescues Used** | 3 manual rescues | Late adoption after long reverse loops | 13 total (`9` `smartRescue` + `4` Lakitu) | **2 total (`1` `smartRescue` + `1` Lakitu, −85% vs Run 3)** |
-| **State Desyncs** | 9m stream hang | Unpaused + latched brake after error | **0** | **0** (survived 10m LLM stream timeout cleanly paused) |
+| Dimension | Run 1 (`43531a3d` — Tutorial) | Run 2 (`c0c05158` — Tutorial) | Run 3 (`2d0bd4ea` — Tutorial, v2) | Run 4 (`d19b18cf` — Tutorial, v3) | Run 5 (`52098352` — *Antediluvian Abyss* Zero-Shot, v4) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Track & Prior Knowledge** | Tutorial (exploratory) | Tutorial (exploratory) | Tutorial (exploratory) | Tutorial + `supertuxkart.md` runbook | **Unseen Singleplayer figure-8 (*Antediluvian Abyss*, 1 Lap, 3 AI)** |
+| **Model & Reasoning** | Frontier VLM | Frontier VLM | **Gemini 4 Hydrogen (Flash-tier, High)** | **Gemini 4 Carbon (Pro-tier, Medium)** | **Gemini 4 Hydrogen (Flash-tier, Medium)** |
+| **Control & Observation** | Unpaused open-loop pulses + 1 static PNG | Pause-bounded scripts + `screencast` + `ffmpeg` 8× MP4 | Pause-bounded 30 Hz `driveServo` v2 + post-pause 4×2 JPEG sheet | 30 Hz multi-cue `driveServo` v3 + pre-pause 4×2 JPEG sheet | **30 Hz biome-agnostic `driveServo` v4 + `bun run perceive` (Depth Anything V2 + OpenCV, 10×)** |
+| **Menu → Grid Time** | ~19m (setup/input failures) | ~8m | ~3m (`DPAD` trial-and-error) | **2m 37s** (1 `pulseStick` + 1 `BTN.A`) | **~3m 50s** (zero-shot Singleplayer setup + track grid) |
+| **Total Wall-Clock Time** | ~55m (~36.5m driving) | ~5h 18m (~5h 10m driving) | **~46m** (~3–5s/turn Flash inference) | **~1h 47m active** (~15–25s/turn Pro inference; +10m API timeout) | **44m 57s** (`~6m 06s` active driving + `~1m 32s` idle check; `07:38.2` race clock vs AI `02:00.403`) |
+| **Trajectory Steps** | 819 steps | 918 steps (2 compactions) | 494 steps (0 compactions) | **348 steps (0 compactions, −30% vs Run 3)** | **732 steps** (`406` to premature finish claim at `seg-55` + `326` to true finish at `seg-109`) |
+| **Driving Segments** | ~110 pulses | 137 video chunks | 60 segments | **49 live segments (−18% vs Run 3)** | **108 completed segments** (`66` `driveServo` + `42` `runChunk`) |
+| **Task Completion** | Partial (skipped 2) | **All** | **All** | **All** | **Finished 1-Lap Race (4th place, verified post-race scoreboard)** |
+| **Off-Road Excursions** | Frequent | Frequent (10–23 step reverse loops) | ~15 deep crashes onto sand/walls | **8 total (6 shallow shoulder grazes self-recovered on-road)** | **4 water falls** (+ ~14 shallow curb/arch wall grazes recovered via `runChunk`) |
+| **Total Rescues Used** | 3 manual rescues | Late adoption after long reverse loops | 13 total (`9` `smartRescue` + `4` Lakitu) | **2 total (`1` `smartRescue` + `1` Lakitu, −85% vs Run 3)** | **6 total (`2` `smartRescue` + `4` Lakitu)** |
+| **State Desyncs** | 9m stream hang | Unpaused + latched brake after error | **0** | **0** (survived 10m LLM stream timeout cleanly paused) | **1 false-finish unpause** (`seg-55`: misread figure-8 intersection as finish line) |
 
 **Key progression & causal attribution**:
 - **Run 2 → Run 3 (Runtime v2, ~95% tooling)**: Solved **system latency, observability, context budget, and input safety** (~7× faster than `ffmpeg` video loops, zero context compactions), even on a faster Flash-tier model (`Gemini 4 Hydrogen`). However, driving suffered **13 rescues** because permissive RGB road scoring (`88–97%` confidence on desert sand and canyon rock), post-pause `FINAL MINIMAP` occlusion, and full-throttle cornering pushed Tux off sharp bends.
@@ -71,8 +72,8 @@ Analyzing the **only 2 rescues in Run 4** revealed two subtle agent-level pitfal
 3. **Wide sandy canyon wash topology (`seg-31`–`seg-39` → `auto-rescue #1`)**: While `wallPenalty` prevented driving into canyon rock walls (`roadConf = 6%`), the Hacienda canyon entrance has a wide flat sandy wash pocket to the right of an inner rock outcrop + wooden lamppost. Documenting that exact fork (`stay left of the inner lamppost`) prevents exploratory turns against sloped canyon banks.
 
 ### Lesson 8: Sandbox, MCP, and Spec-Test Hygiene
-- In Antigravity's network-isolated sandbox, `chrome-devtools` MCP (`evaluate_script` with inline `format: "script"` + `take_screenshot` omitting `filePath`) works natively with zero `BypassSandbox` prompts, whereas external WebSocket CLIs (`127.0.0.1:9222`) are blocked by sandbox network isolation and MCP `sourcePath` is blocked when `workspaceRoots` is unset.
-- Every code snippet in `SKILL.md` must have a matching test in `packages/runtime/src/runtime.test.ts` (`14` unit tests / `73` assertions in v3).
+- In Antigravity's network-isolated sandbox, `chrome-devtools` MCP (`evaluate_script` with inline `format: "script"` + `take_screenshot` omitting `filePath`) and offline `bun run perceive` (with `.cache/models` pre-populated and `env.allowRemoteModels = false`) work natively with zero `BypassSandbox` prompts, whereas external WebSocket CLIs (`127.0.0.1:9222`) are blocked by sandbox network isolation and MCP `sourcePath` is blocked when `workspaceRoots` is unset.
+- Every code snippet in `SKILL.md` must have a matching test in `packages/runtime/src/runtime.test.ts` (`21` unit/integration tests / `102` assertions across `runtime`, `perception`, and `browsertool` in v4).
 
 ---
 
@@ -90,11 +91,50 @@ All Runtime v3 upgrades proposed after Run 3 are now implemented, unit-tested (`
 
 ---
 
-## 4. Would a Future Agent Solve This Task & Generalize to Other Real-Time Games?
+## 4. Run 5 Zero-Shot Evaluation: Unseen Singleplayer Track (*Antediluvian Abyss*, Runtime v4 + `bun run perceive`)
+
+To test whether our upgrades genuinely generalize beyond the memorized Tutorial course, Run 5 (`52098352`) launched on **Gemini 4 Hydrogen (Medium)** with zero track-specific prompts, navigated Singleplayer menus to an unseen underwater figure-8 track (*Antediluvian Abyss*, 1 Lap, Novice, Time Trial, 3 AI karts), and completed the race (`"You finished the race in rank 4!"`, post-race scoreboard verified).
+
+### A. Did the Runtime v4 + Third-Party Perception Changes Help?
+**Mixed — yes on zero-shot biome generalization and 3D obstacle recovery; no on multi-surface lane centering, lap-progress verification, and overall turn efficiency.**
+
+1. **What clearly helped**:
+   - **Zero-shot completion in an alien biome (`6` rescues vs. `13` in Run 3)**: *Antediluvian Abyss* violates desert/asphalt assumptions—its "sky" is dark underwater blue, bridges are grey metal grates flanked by bright blue-and-white striped curbs, and stone colonnade pillars split the road. Runtime v4's sky-adaptive `wallPenalty` and mode-seeking `computeCorridorCentroid()` maintained `55–74%` road confidence and finished an unseen figure-8 course on `Hydrogen (Medium)` with **half the rescues (`6` vs `13`)** that `Hydrogen (High)` needed on the simpler Tutorial track in Run 3.
+   - **Offline 3D depth (`Depth Anything V2 Small` + `OpenCV 5.0`, `~620–660ms` in sandbox)**: Whenever RGB confidence stayed misleadingly high (`50–75%`) while facing stone pillars or arch walls, `bun run perceive` pinpointed the true 3D opening:
+     - `seg-24`: Detected a center colonnade pillar (`centerClearance: 0`, `corridorOffsetX: -0.69`), steering cleanly left around it;
+     - `seg-77` & `seg-92`: Caught frontal arch-wall wedges (`centerClearance: 0.15` → `corridorOffsetX: +0.60`; `centerClearance: 0.34` → `corridorOffsetX: -0.69`), immediately prescribing the correct unwedge turn direction.
+2. **What fell short or created new friction**:
+   - **Two-tone road decks + `resetRoadModel()` curb locking (`seg-60`–`seg-109`)**: *Antediluvian Abyss* bridges combine a dark grated center deck with wide blue-and-white striped curbs. Calling `resetRoadModel()` after curb recoveries seeded one of the flanking strips (`x: 0.28..0.39` / `0.61..0.72`) onto the bright curb instead of the center grate, biasing `driveServo` toward the outer edge and causing **~14 stone-arch wall scrapes** and **2 late-lap bridge water falls** (`seg-89`, `seg-94`).
+   - **False `autoCornerBrake` on uphill ramps & striped curbs (`seg-19`, `seg-57`)**: 2D RGB curvature spiked (`|meanCurvature| = 0.63–0.74`) on uphill perspective foreshortening and diagonal curb stripes, pulsing `BTN.X` (brake) on clear ramps or stalling acceleration from standstill (`seg-57` `stuckDetected: true`).
+   - **Single-frame minimap ambiguity at figure-8 intersections (`seg-55` false finish)**: Because a single static minimap frame has no velocity vector (`headingDeg: null` in 10/10 `perceive` calls), when Tux crossed the figure-8 overpass/underpass intersection heading **North** at `02:13.875` (`seg-55`), Tux's round icon sat directly beside the East-West finish-line tick—tricking the VLM (and initial review) into mistaking `1/1` + three AI checkered flags for race completion when Tux was only ~60% through the lap.
+
+### B. Would Larger or Smaller Steps Help?
+**Neither uniformly—under pause-chunked control, fixed step duration has a sharp U-shaped failure curve, and `2.2–2.5s` sat pinched between both walls:**
+
+- **Why smaller fixed steps (`< 1.5s`) hurt**: Every pause-bounded step pays `220ms` unpause settle + `~350–400ms` low-speed acceleration where kart turn-in sluggishly understeers (`controller.ts` suppresses throttle modulation for the first `380ms` just to build speed), plus **`~12–20s` of MCP screenshot + VLM inference overhead**. Halving step size to `1.2s` would double trajectory steps (`>200` segments, `>80m` wall-clock) while spending a third of every chunk accelerating from near-rest.
+- **Why larger blind steps (`4–6s`) also hurt with an RGB-only inner loop**: On narrow colonnade bridges, lateral drift into an arch pillar or off an unguarded edge happened in **`1.6–2.5s`** (`seg-89` water fall at `+1.67s`, `seg-94` at `+1.85s`, `seg-101` pillar wedge at `+2.55s`). Extending fixed chunks to `5s` without upgrading inner-loop 3D perception would convert minor wall grazes into deep off-track rescues.
+- **What *would* help — Adaptive Event-Driven Horizons (`6–10s` max, `<250ms` hazard interrupt)**: Run **much larger steps (`6–10s`, or continuous unpaused)** whenever 3D corridor clearance and centerline confidence are high, while triggering an **immediate sub-second early stop** only on true events (3D `centerClearance < 0.35`, topological fork, sharp hairpin, `stuck`, or HUD finish banner). That gives both high momentum on straights/sweepers and sub-second reaction at hazards.
+
+### C. Should We Move More Into the Real-Time Loop?
+**Yes — decisively.** Dissecting Run 5's `44m 57s` (`2,697s`) wall-clock budget exposes the bottleneck:
+- **Active in-game driving**: `~366s` (`~6.1m`, vs Novice AI `2m 00s` — slowed ~3× by stop-and-go pauses and 14 curb-wedge reversals).
+- **Turn-by-turn pause/MCP/VLM overhead**: **`~2,240s` (`86%` of total wall-clock time across `108` segments / `732` steps)** — roughly **`20s` of tool/LLM overhead for every `2.5s` of driving**.
+
+Moving four deterministic/geometric capabilities from the `0.05 Hz` VLM loop into the **`10–30 Hz` real-time loop** eliminates most of those 108 segments:
+1. **In-loop 3D free-space corridor (`8–15 Hz` Depth Anything V2 via WebGPU / persistent local daemon)**: Fusing 3D depth directly inside `driveServo` avoids center pillars (`seg-24`, `seg-77`) and arch walls (`seg-92`, `seg-108`) *without pausing*, treats two-tone grated decks + striped curbs as a single flat 3D surface bounded by vertical walls (`seg-68`–`seg-101`), and prevents `autoCornerBrake` from braking on uphill ramps (`seg-19`).
+2. **Temporal minimap odometry ($\Delta x, \Delta y \rightarrow \theta_{\text{heading}}, \text{lapProgress}$)**: Differencing player minimap coordinates across consecutive frames inside the 30 Hz loop yields exact ego heading and disambiguates figure-8 overpasses from finish lines (`seg-55`, where $\vec{v} = \text{North}$ vs. finish line $\vec{v} = \text{East}$).
+3. **Local stuck-unwedge reflex (`reverse + steer toward max depth sector`)**: In Run 5, the VLM hand-authored the same `450ms BTN.X reverse → steer toward open corridor` `runChunk` **14 separate times**. Executing a bounded 1-second reverse-and-realign reflex locally inside `driveServo` before escalating to the VLM saves ~14 turns (`~5m` wall-clock) and preserves race flow.
+4. **Explicit HUD finish / scoreboard detector**: Detecting the `"You finished the race"` banner or checkered-flag state inside the loop prevents premature stops (`seg-55`) and terminates cleanly the instant the finish line is crossed (`seg-109`).
+
+With those four upgrades in System 1, System 2 (the VLM) shifts from a **2.5-second micro-chauffeur** (`108` calls/lap) to an **event-driven / asynchronous tactical supervisor** (`~8–15` check-ins/lap for menus, true forks, item strategy, and double-stuck anomalies), cutting unseen-track wall-clock time from **~45 minutes to ~3–5 minutes** and in-game lap times from **~6–7 minutes toward ~2.5 minutes**.
+
+---
+
+## 5. Would a Future Agent Solve This Task & Generalize to Other Real-Time Games?
 
 ### A. SuperTuxKart
 - **Tutorial completion & clean driving (`0–2` rescues)**: **Yes, verified end-to-end.** Using `window.gameplayApi` v3 (`3.0.0`), `.agents/skills.json`, `skills/gameplay/SKILL.md`, and `skills/gameplay/references/supertuxkart.md`, Run 4 completed every tutorial mechanic and returned to the Main Menu in **49 segments / 348 steps with only 2 rescues**—and with the two Run 4 lessons (`steerBias: 0` on curves + canyon entrance lamppost landmark) now documented in `SKILL.md` and `supertuxkart.md`, a future agent has everything needed for a **0–1 rescue** run.
-- **Live unpaused races against AI karts**: Requires running `driveServo` continuously *without* pause-chunking (`pause: false, unpause: false`) plus either **minimap-pose corner lookahead** (predicting 90° hairpins behind 3D hill crests before visual road pixels disappear) or a **learned visuomotor policy** to handle moving AI karts, slipstreaming, and item chaos in real time.
+- **Unseen Singleplayer tracks (zero-shot completion vs. competitive AI lap times)**: **Zero-shot completion is now verified (`Run 5`, *Antediluvian Abyss*, 4th place)** using Runtime v4 + `bun run perceive`. Closing the remaining speed gap (`~6.1m` active driving vs. Novice AI `2m 00s`) and cutting wall-clock time (`45m` → `~3–5m`) requires moving 3D depth corridor steering, temporal minimap odometry, and stuck-unwedge reflexes into a **continuous non-pausing (`pause: false`) real-time loop** as detailed in Section 4.C.
 
 ### B. Other Games (Video Output + Controller Input Only)
 

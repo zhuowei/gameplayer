@@ -11,7 +11,7 @@
 - `packages/perception/`: Offline third-party 3D depth & OpenCV analyzer CLI (`bun run perceive <screenshot.jpg>`) powered by quantized **Depth Anything V2 Small** (`@huggingface/transformers`), **OpenCV 5.0** (`@techstark/opencv-js`), and **`sharp`** (runs inside Standard Sandbox Mode with `BypassSandbox: false`).
 - `packages/browsertool/`: Zero-dependency Bun CLI for raw Chrome DevTools Protocol (`ws://127.0.0.1:9222`) when running outside network-isolated sandboxes.
 - `skills/gameplay/`: Progressive-disclosure gameplay skill ([SKILL.md](skills/gameplay/SKILL.md)) and game-specific runbooks ([supertuxkart.md](skills/gameplay/references/supertuxkart.md)).
-- `docs/lessons-learned.md`: Empirical post-mortem across four SuperTuxKart runs, causal attribution, third-party library tradeoffs, and foundation-model caveats.
+- `docs/lessons-learned.md`: Empirical post-mortem across five SuperTuxKart runs (four Tutorial iterations + Run 5 zero-shot Singleplayer *Antediluvian Abyss*), causal attribution, step-sizing analysis, real-time loop tradeoffs, and foundation-model caveats.
 
 Build and test inside the standard sandbox before committing:
 ```sh
@@ -41,5 +41,6 @@ bun test
    - Couple steering demand to speed/throttle modulation on tight curves (`>= 60°`); full-throttle turning radii exceed narrow corners in most racing games.
 5. **Test documented snippets verbatim**:
    - Whenever adding or editing code examples in `skills/gameplay/SKILL.md`, add or update a test in `packages/runtime/src/runtime.test.ts` that exercises the exact callback/API shape (e.g., `ctx.api.BTN`) so documentation/code drift fails `bun test`.
-6. **Evaluate driving quality, not just completion**:
+6. **Evaluate driving quality and verify genuine completion**:
    - Track **off-road excursions** and **`smartRescue()` / auto-rescue counts** alongside wall-clock time and step count. Treating rescue teleports as routine navigation masks control bugs; a healthy SuperTuxKart tutorial lap should require **0–1 rescues**.
+   - Never declare a race finished from static minimap proximity (e.g., figure-8 overpass/underpass intersections), the `1/1` lap HUD icon, or AI opponents' checkered flags; require the player's own checkered flag, `"You finished the race"` banner, or post-race results scoreboard.
