@@ -1,6 +1,6 @@
-# `@gameplay/runtime` (`window.gameplayApi`)
+# `@gameplay/runtime` (`window.gameplayApi` `v5.0.0`)
 
-Browser-injected virtual gamepad, 30 Hz pixel servo, safe pause-bounded chunk runner, and in-canvas contact-sheet compositor for playing unmodified streamed games in Chrome.
+Browser-injected virtual gamepad, 30 Hz pure-pursuit servo with non-blocking in-page 3D depth Web Worker + stateful minimap odometry + local `autoUnwedge`, safe pause-bounded chunk runner, and pre-pause contact-sheet compositor for playing unmodified streamed games in Chrome.
 
 ## Build & Test
 
@@ -10,21 +10,28 @@ bun run build
 bun test
 ```
 
-Outputs `packages/runtime/gameplay-runtime.js` (standalone IIFE exposing `window.gameplayApi`).
+Outputs:
+- `packages/runtime/gameplay-runtime.js`: Standalone IIFE exposing `window.gameplayApi` (`v5.0.0`).
+- `.cache/gameplay-depth-bundle.js` (gitignored, generated when cached model exists): Offline `onnxruntime-web` WASM + quantized **Depth Anything V2 Small** (`280×210`) asset bundle.
 
 ## Injection (`chrome-devtools` MCP)
 
-Pass the contents of `gameplay-runtime.js` inline to `evaluate_script` with `format: "script"` (avoid `sourcePath` if MCP `workspaceRoots` is unconfigured), then verify:
+With `--workspace` configured on `chrome-devtools` MCP, inject via `evaluate_script` with `format: "script"` and `sourcePath`:
+1. `.cache/gameplay-depth-bundle.js` (optional, enables in-page 3D depth)
+2. `packages/runtime/gameplay-runtime.js`
 
-Verify (`version: "3.0.0"`):
+Initialize and verify (`version: "5.0.0"`):
 
 ```js
-() => ({
-  ready: Boolean(window.gameplayApi),
+async () => ({
+  hasApi: Boolean(window.gameplayApi),
   version: window.gameplayApi?.version,
+  depth: await window.gameplayApi?.initDepthEngine(),
   frame: window.gameplayApi?.inspectFrame(),
 })
 ```
+
+*(If `--workspace` is unconfigured on MCP, pass `packages/runtime/gameplay-runtime.js` inline via `function` with `format: "script"` instead of `sourcePath`.)*
 
 ## Key API Surface
 
@@ -33,10 +40,12 @@ Verify (`version: "3.0.0"`):
   - `setButton(index, value)`, `tapButton(index, holdMs?, settleMs?)`
   - `setStick(stickIndex, x, y)`, `pulseStick(stickIndex, x, y, holdMs?, settleMs?)`, `rampStick(stickIndex, targetX, targetY, durationMs, steps?)`
   - `resetAll()`, `getState()`, `sleep(ms)`
-- **Orchestrated gameplay loops**:
-  - `driveServo(options?)`: Unpauses (`BTN.A`), holds/modulates throttle (`BTN.Y` with curvature-coupled `throttleModulation`), runs 30 Hz multi-cue pixel analysis + thresholded-centroid PD steering, snapshots unobstructed HUD crops (`MINIMAP`, `TUTORIAL PROMPT`, `LOOKAHEAD & ALERT`) *before* pausing (`BTN.START`), resets inputs in `finally`, and displays an annotated 4×2 contact-sheet overlay.
-  - `runChunk(async ({ api, shouldAbort, captureNow }) => { ... }, options?)`: Runs custom input maneuvers with automatic frame sampling, stuck abort signaling, pre-pause HUD snapshot, `try / finally` pause + `resetAll()`, and contact-sheet rendering.
-  - `smartRescue(options?)`: Taps `BTN.BACK` (`8`) inside a safe `runChunk` to trigger in-game track rescue.
-  - `hideOverlay()` / `inspectFrame()`: Removes the contact-sheet overlay for raw viewport inspection or returns instantaneous pixel telemetry.
+- **In-page 3D Depth (`src/depth.ts`)**:
+  - `initDepthEngine()`: Spawns an in-memory `Blob` Web Worker running quantized Depth Anything V2 Small (`280×210` WASM, `~540–550ms/frame` non-blocking, with automatic `main_thread` fallback if CSP blocks `blob:` Workers).
+  - `getDepthStatus()`: Returns `{ ready, mode, inputSize, inferencesCompleted, lastInferMs, lastResult }`.
+- **Orchestrated gameplay loops (`src/controller.ts`, `src/vision.ts`)**:
+  - `driveServo(options?)`: `7000ms` default adaptive horizon; unpauses (`BTN.A`), modulates throttle & tight-corner braking, fuses 30 Hz dual-band pure-pursuit road corridor (with striped-curb & underwater stone-pillar rejection), 30 Hz stateful `MinimapTracker` ego curvature (`turnAhead`), and live 3D depth corridor (`corridorOffsetX`), performs up to `maxUnwedgeAttempts` (default `2`) in-loop `autoUnwedge` recoveries when wedged, halts cleanly on post-race results (`stopOnRaceFinish` skipping `BTN.START` pause), snapshots unobstructed HUD crops before pausing, resets inputs in `finally`, and displays an annotated 4×2 contact sheet.
+  - `runChunk(async ({ api, shouldAbort, captureNow }) => { ... }, options?)`: Runs custom input maneuvers with frame sampling, stuck abort signaling, pre-pause HUD snapshot, `try / finally` pause + `resetAll()`, and contact-sheet rendering.
+  - `smartRescue(options?)` / `resetRoadModel()` / `hideOverlay()` / `inspectFrame()`.
 
-See [skills/gameplay/SKILL.md](../../skills/gameplay/SKILL.md) and [docs/lessons-learned.md](../../docs/lessons-learned.md) for control architecture details, empirical post-mortems, and best practices.
+See [skills/gameplay/SKILL.md](../../skills/gameplay/SKILL.md) and [docs/lessons-learned.md](../../docs/lessons-learned.md) for architecture details and empirical evaluations.

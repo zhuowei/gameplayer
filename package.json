@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "build": "bun build --outfile=packages/runtime/gameplay-runtime.js --format=iife packages/runtime/index.ts",
+    "build": "bun build --outfile=packages/runtime/gameplay-runtime.js --format=iife packages/runtime/index.ts && bun scripts/build-depth-bundle.ts",
     "perceive": "bun packages/perception/index.ts",
     "test": "bun test"
   },

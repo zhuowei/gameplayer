@@ -6,7 +6,7 @@ const gamepad = createGamepadController();
 const orchestrator = createGameplayOrchestrator(gamepad);
 
 const gameplayApi = {
-  version: "4.0.0",
+  version: "5.0.0",
   BTN,
   simGamepad: gamepad.simGamepad,
   setStick: gamepad.setStick,
@@ -23,10 +23,12 @@ const gameplayApi = {
   smartRescue: orchestrator.smartRescue,
   hideOverlay: hideSheetOverlay,
   resetRoadModel: orchestrator.resetRoadModel,
+  initDepthEngine: orchestrator.initDepthEngine,
+  getDepthStatus: orchestrator.getDepthStatus,
   inspectFrame: orchestrator.inspectFrame,
 };
 
 (window as unknown as Record<string, unknown>)["gameplayApi"] = gameplayApi;
 console.log(
-  "Gameplay - hooked v4 (biome-agnostic pure-pursuit servo + contrastive shoulder + pre-pause contact-sheet)",
+  "Gameplay - hooked v5 (in-page 3D depth worker + 30Hz minimap odometry + autoUnwedge + finish detection)",
 );

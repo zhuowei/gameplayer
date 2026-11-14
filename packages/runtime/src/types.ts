@@ -32,6 +32,10 @@ export interface FrameSample {
   roadOffsetX: number;
   roadCurvature?: number;
   roadConfidence: number;
+  depthCorridorX?: number;
+  depthClearance?: number;
+  minimapTurnAhead?: number;
+  minimapHeadingDeg?: number | null;
 }
 
 export interface ChunkOptions {
@@ -66,7 +70,7 @@ export interface ChunkOptions {
 }
 
 export interface DriveServoOptions extends ChunkOptions {
-  /** Maximum active driving duration in ms (default: 3000) */
+  /** Maximum active driving duration in ms (default: 7000) */
   maxDurationMs?: number;
   /** Control tick period in ms (default: 33ms / ~30Hz) */
   tickMs?: number;
@@ -98,6 +102,17 @@ export interface DriveServoOptions extends ChunkOptions {
   /** Stop early if HUD warning ("WRONG WAY!") dominates */
   stopOnRedAlert?: boolean;
   redAlertThreshold?: number;
+  /** Automatically reverse + re-orient inside the 30 Hz loop if wedged against a wall (default: true) */
+  autoUnwedge?: boolean;
+  maxUnwedgeAttempts?: number;
+  unwedgeReverseMs?: number;
+  unwedgeForwardMs?: number;
+  /** Use in-page Web Worker / WASM Depth Anything V2 Small if initialized (default: true) */
+  useInPageDepth?: boolean;
+  /** Use stateful 30 Hz temporal minimap odometry & ego curvature lookahead (default: true) */
+  useMinimapOdometry?: boolean;
+  /** Halt cleanly without pressing Pause if post-race results modal appears (default: true) */
+  stopOnRaceFinish?: boolean;
 }
 
 export interface ChunkResult {
@@ -115,6 +130,12 @@ export interface ChunkResult {
   meanSteerX: number;
   meanCurvature: number;
   stuckDetected: boolean;
+  unwedgeCount?: number;
+  raceFinished?: boolean;
+  depthFramesUsed?: number;
+  minimapHeadingDeg?: number | null;
+  minimapTurnAhead?: number;
+  minimapDistance?: number;
   finalState: GamepadSnapshot;
   /** Compact JPEG data URL of the annotated contact sheet (if requested/created) */
   sheetDataUrl?: string;

@@ -11,6 +11,18 @@ export interface RoadColorModel {
   shoulderInitialized?: boolean;
 }
 
+export interface MinimapReading {
+  visible: boolean;
+  onRibbon: boolean;
+  ribbonPixels: number;
+  playerPos: [number, number] | null;
+  headingDeg: number | null;
+  headingValid: boolean;
+  turnAhead: number;
+  speed: number;
+  distance: number;
+}
+
 export interface FrameAnalysis {
   motionScore: number;
   bannerDelta: number;
@@ -19,10 +31,12 @@ export interface FrameAnalysis {
   roadCurvature: number;
   roadConfidence: number;
   updatedRoadModel: RoadColorModel;
+  minimap?: MinimapReading;
+  raceFinishedCandidate?: boolean;
 }
 
 export const DEFAULT_STK_CROPS: CropRegion[] = [
-  { label: "MINIMAP", x: 0.0, y: 0.58, w: 0.23, h: 0.41 },
+  { label: "MINIMAP", x: 0.0, y: 0.58, w: 0.28, h: 0.41 },
   { label: "TUTORIAL PROMPT", x: 0.12, y: 0.84, w: 0.76, h: 0.16 },
   { label: "LOOKAHEAD & ALERT", x: 0.22, y: 0.22, w: 0.56, h: 0.38 },
 ];
@@ -53,6 +67,52 @@ function computeSandPenalty(r: number, g: number, b: number, roadLum: number): n
     const lumFactor = Math.min(1, (lum - 145) / 25);
     const yellowFactor = Math.min(1, (yellowExcess - 28) / 22);
     return 0.95 * Math.max(0.55, lumFactor * yellowFactor);
+  }
+  return 0;
+}
+
+function isSaturatedBlueCurb(r: number, g: number, b: number): boolean {
+  return b > 150 && b - r > 42 && (b - g > 12 || g > 115);
+}
+
+function isSaturatedRedCurb(r: number, g: number, b: number): boolean {
+  return r > 175 && r - g > 60 && r - b > 45;
+}
+
+/**
+ * Penalizes alternating cyan/blue-white and red-white striped bridge/track curbs
+ * so seeded road models lock onto the drivable deck instead of hugging outer curbs.
+ */
+function computeCurbStripePenalty(
+  r: number,
+  g: number,
+  b: number,
+  neighborR: number,
+  neighborG: number,
+  neighborB: number,
+  evalModel: RoadColorModel,
+): number {
+  const roadBlueExcess = evalModel.b - evalModel.r;
+  const roadRedExcess = evalModel.r - evalModel.g;
+  const refLum = (evalModel.r + evalModel.g + evalModel.b) / 3;
+
+  if (roadBlueExcess < 28 && isSaturatedBlueCurb(r, g, b)) {
+    return 0.72;
+  }
+  if (roadRedExcess < 45 && isSaturatedRedCurb(r, g, b)) {
+    return 0.72;
+  }
+
+  if (refLum < 185) {
+    const lum = (r + g + b) / 3;
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    const neighborLum = (neighborR + neighborG + neighborB) / 3;
+    const neighborIsCurb =
+      (roadBlueExcess < 28 && isSaturatedBlueCurb(neighborR, neighborG, neighborB)) ||
+      (roadRedExcess < 45 && isSaturatedRedCurb(neighborR, neighborG, neighborB));
+    if (lum > 208 && chroma < 28 && neighborIsCurb && Math.abs(lum - neighborLum) > 50) {
+      return 0.55;
+    }
   }
   return 0;
 }
@@ -262,32 +322,65 @@ export function analyzeRgbaFrame(
 
   // 3. Biome-agnostic ground seeding flanking player kart wheels + nose lookahead
   // Avoids player sprite (x: 40%..60%, y: 52%..84%), minimap (x < 24%), and speedometer (x > 76%)
-  const wheelPixels: Array<[number, number, number]> = [];
+  // [r, g, b, weight, localEdge, nearCurb]
+  const wheelPixels: Array<[number, number, number, number, number, boolean]> = [];
   let seedTotal = 0;
 
-  const collectPatch = (x0Frac: number, x1Frac: number, y0Frac: number, y1Frac: number) => {
+  const isPixelCurbPaint = (px: number, py: number): boolean => {
+    const cx = Math.max(0, Math.min(width - 1, px));
+    const cy = Math.max(0, Math.min(height - 1, py));
+    const i = (cy * width + cx) * 4;
+    return (
+      isSaturatedBlueCurb(rgba[i], rgba[i + 1], rgba[i + 2]) ||
+      isSaturatedRedCurb(rgba[i], rgba[i + 1], rgba[i + 2])
+    );
+  };
+
+  const collectPatch = (
+    x0Frac: number,
+    x1Frac: number,
+    y0Frac: number,
+    y1Frac: number,
+    weight = 1,
+  ) => {
     const xs = Math.floor(width * x0Frac);
     const xe = Math.floor(width * x1Frac);
     const ys = Math.floor(height * y0Frac);
     const ye = Math.floor(height * y1Frac);
     for (let y = ys; y < ye; y += 2) {
       for (let x = xs; x < xe; x += 2) {
-        seedTotal++;
+        seedTotal += weight;
         const idx = (y * width + x) * 4;
-        wheelPixels.push([rgba[idx], rgba[idx + 1], rgba[idx + 2]]);
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        const rx = (y * width + Math.min(width - 1, x + 2)) * 4;
+        const dy = (Math.min(height - 1, y + 2) * width + x) * 4;
+        const edgeX =
+          (Math.abs(r - rgba[rx]) + Math.abs(g - rgba[rx + 1]) + Math.abs(b - rgba[rx + 2])) /
+          (3 * 255);
+        const edgeY =
+          (Math.abs(r - rgba[dy]) + Math.abs(g - rgba[dy + 1]) + Math.abs(b - rgba[dy + 2])) /
+          (3 * 255);
+        const nearCurb =
+          isPixelCurbPaint(x - 3, y) ||
+          isPixelCurbPaint(x + 3, y) ||
+          isPixelCurbPaint(x, y - 3) ||
+          isPixelCurbPaint(x, y + 3);
+        wheelPixels.push([r, g, b, weight, Math.max(edgeX, edgeY), nearCurb]);
       }
     }
   };
-  collectPatch(0.28, 0.39, 0.64, 0.75);
-  collectPatch(0.61, 0.72, 0.64, 0.75);
-  collectPatch(0.44, 0.56, 0.47, 0.52);
+  collectPatch(0.28, 0.39, 0.64, 0.75, 1);
+  collectPatch(0.61, 0.72, 0.64, 0.75, 1);
+  collectPatch(0.38, 0.62, 0.44, 0.51, 2);
 
   let seedR = 0;
   let seedG = 0;
   let seedB = 0;
   let seedValid = 0;
 
-  for (const [r, g, b] of wheelPixels) {
+  for (const [r, g, b, weight, localEdge, nearCurb] of wheelPixels) {
     const lum = (r + g + b) / 3;
     if (lum < 22 || lum > 242) continue;
     // Reject obvious sky pixels if upside-down or facing cliff skybox
@@ -302,11 +395,18 @@ export function analyzeRgbaFrame(
     if (r - g > 72 && r > 180) continue;
 
     if (roadModel.initialized) {
-      // Once initialized, reject pixels matching known off-road shoulder or classic sand/grass outliers
+      // Once initialized, reject pixels matching known off-road shoulder or classic sand/grass/curb outliers
       const modelLum = (roadModel.r + roadModel.g + roadModel.b) / 3;
       const modelGreen = roadModel.g - Math.max(roadModel.r, roadModel.b);
       if (modelGreen < 8 && g - Math.max(r, b) > 16) continue;
       if (computeSandPenalty(r, g, b, modelLum) > 0.15) continue;
+      if (
+        (roadModel.b - roadModel.r < 28 && isSaturatedBlueCurb(r, g, b)) ||
+        (roadModel.r - roadModel.g < 45 && isSaturatedRedCurb(r, g, b)) ||
+        (modelLum < 185 && nearCurb && lum > 205 && Math.max(r, g, b) - Math.min(r, g, b) < 28)
+      ) {
+        continue;
+      }
       if (
         roadModel.shoulderInitialized &&
         rgbColorDistance(
@@ -321,17 +421,19 @@ export function analyzeRgbaFrame(
         continue;
       }
     } else {
-      // Uninitialized: allow snow/ice (lum > 188 when low yellow-sand chroma) & moss/stone/asphalt/dirt,
-      // while still rejecting pure lawn grass (greenExcess > 26) and yellow desert sand
+      // Uninitialized: allow snow/ice (uniform high-lum) & moss/stone/asphalt/dirt/grated bridges,
+      // while rejecting pure lawn grass, yellow desert sand, and striped cyan/red/white curbs
       const greenExcess = g - Math.max(r, b);
       if (greenExcess > 26) continue;
       if (computeSandPenalty(r, g, b, 120) > 0.15) continue;
+      if (isSaturatedBlueCurb(r, g, b) || isSaturatedRedCurb(r, g, b)) continue;
+      if (lum > 198 && (localEdge > 0.22 || nearCurb)) continue;
     }
 
-    seedR += r;
-    seedG += g;
-    seedB += b;
-    seedValid++;
+    seedR += r * weight;
+    seedG += g * weight;
+    seedB += b * weight;
+    seedValid += weight;
   }
 
   let evalModel: RoadColorModel = { ...roadModel };
@@ -346,8 +448,8 @@ export function analyzeRgbaFrame(
   }
 
   // 4. Evaluate navigability across 24 columns in dual Pure-Pursuit bands:
-  // - Far lookahead band (y: 42%, 47%) for early corner turn-in & curvature estimation
-  // - Near-mid lookahead band (y: 52%, 59%) for immediate cross-track centering
+  // - Far lookahead band (y: 43%, 48%) for early corner turn-in & curvature estimation
+  // - Near-mid lookahead band (y: 53%, 59%) for immediate cross-track centering
   const numCols = 24;
   const rawFarScores = new Float64Array(numCols);
   const rawNearScores = new Float64Array(numCols);
@@ -357,6 +459,7 @@ export function analyzeRgbaFrame(
   const nearRows = [Math.floor(height * 0.53), Math.floor(height * 0.59)];
   const allLookRows = [...farRows, ...nearRows];
   const upperWallRows = [Math.floor(height * 0.2), Math.floor(height * 0.28)];
+  const midHorizonRow = Math.floor(height * 0.35);
 
   const refLum = (evalModel.r + evalModel.g + evalModel.b) / 3;
   const refGreen = evalModel.g - Math.max(evalModel.r, evalModel.b);
@@ -376,6 +479,8 @@ export function analyzeRgbaFrame(
     let farCnt = 0;
     let nearSum = 0;
     let nearCnt = 0;
+    let curbHitCnt = 0;
+    let colSampleCnt = 0;
 
     let midR = 0;
     let midG = 0;
@@ -422,6 +527,34 @@ export function analyzeRgbaFrame(
             Math.abs(b - rgba[rightIdx + 2])) /
           (3 * 255);
 
+        // Inspect nearby neighbor with strongest curb chroma so striped white-blue/white-red curbs are penalized
+        let nR = rgba[rightIdx];
+        let nG = rgba[rightIdx + 1];
+        let nB = rgba[rightIdx + 2];
+        const probeOffsets: Array<[number, number]> = [
+          [-3, 0],
+          [3, 0],
+          [0, -2],
+          [0, 2],
+        ];
+        for (const [dx, dy] of probeOffsets) {
+          const px = Math.max(0, Math.min(width - 1, x + dx));
+          const py = Math.max(0, Math.min(height - 1, y + dy));
+          const pIdx = (py * width + px) * 4;
+          const pr = rgba[pIdx];
+          const pg = rgba[pIdx + 1];
+          const pb = rgba[pIdx + 2];
+          if (isSaturatedBlueCurb(pr, pg, pb) || isSaturatedRedCurb(pr, pg, pb)) {
+            nR = pr;
+            nG = pg;
+            nB = pb;
+            break;
+          }
+        }
+        const curbPenalty = computeCurbStripePenalty(r, g, b, nR, nG, nB, evalModel);
+        if (curbPenalty > 0) curbHitCnt++;
+        colSampleCnt++;
+
         // Adaptive biome penalties: disable green/bright-wall penalties when road itself is green/snow
         const greenPenalty =
           refGreen >= 8 ? 0 : Math.max(0, (g - Math.max(r, b) - 12) / 55);
@@ -453,6 +586,7 @@ export function analyzeRgbaFrame(
           1 -
             (colorDist * 2.15 +
               edge * 0.85 +
+              curbPenalty +
               greenPenalty +
               skyPenalty +
               redWallPenalty +
@@ -471,9 +605,8 @@ export function analyzeRgbaFrame(
       }
     }
 
-    // Vertical wall continuity penalty: a close wall extends continuously above the horizon
-    // (y: 20%..28%) with nearly identical color to the lookahead band, unlike open sky,
-    // green hills, or dark wooden tunnel roofs (upperLum < 76).
+    // Vertical wall & underwater colonnade pillar continuity penalty:
+    // Rejects pillars even in blue underwater lighting unless true open-sky contrast exists.
     let wallPenalty = 0;
     if (midCount > 0) {
       let upR = 0;
@@ -489,29 +622,51 @@ export function analyzeRgbaFrame(
           upCount++;
         }
       }
-      if (upCount > 0) {
+      let mhR = 0;
+      let mhG = 0;
+      let mhB = 0;
+      let mhCount = 0;
+      for (let x = x0; x < x1; x++) {
+        const idx = (midHorizonRow * width + x) * 4;
+        mhR += rgba[idx];
+        mhG += rgba[idx + 1];
+        mhB += rgba[idx + 2];
+        mhCount++;
+      }
+
+      if (upCount > 0 && mhCount > 0) {
         upR /= upCount;
         upG /= upCount;
         upB /= upCount;
+        mhR /= mhCount;
+        mhG /= mhCount;
+        mhB /= mhCount;
         const mR = midR / midCount;
         const mG = midG / midCount;
         const mB = midB / midCount;
         const upLum = (upR + upG + upB) / 3;
-        const upIsSky = upB - upR > 18 && upLum > 105;
+        const verticalRgbDiff =
+          (Math.abs(upR - mR) + Math.abs(upG - mG) + Math.abs(upB - mB)) / 3;
+        const midHorizonDiff =
+          (Math.abs(mhR - mR) + Math.abs(mhG - mG) + Math.abs(mhB - mB)) / 3;
+        const chromaShift = Math.abs((upB - upR) - (mB - mR));
+        const upIsOpenSky =
+          upB - upR > 18 && upLum > 105 && (verticalRgbDiff > 28 || chromaShift > 18);
         const upIsFoliage = upG - Math.max(upR, upB) > 12;
-        const upIsDarkCeiling = upLum < 76;
-        if (!upIsSky && !upIsFoliage && !upIsDarkCeiling) {
-          const verticalRgbDiff =
-            (Math.abs(upR - mR) + Math.abs(upG - mG) + Math.abs(upB - mB)) / 3;
-          if (verticalRgbDiff < 26) {
-            wallPenalty = 0.82 * Math.min(1, (26 - verticalRgbDiff) / 14);
+        const upIsPitchDark = upLum < 48;
+        if (!upIsOpenSky && !upIsFoliage && !upIsPitchDark) {
+          if (verticalRgbDiff < 26 && midHorizonDiff < 24) {
+            wallPenalty = 0.85 * Math.min(1, (26 - verticalRgbDiff) / 14);
           }
         }
       }
     }
 
-    const fScore = farCnt > 0 ? Math.max(0, farSum / farCnt - wallPenalty) : 0;
-    const nScore = nearCnt > 0 ? Math.max(0, nearSum / nearCnt - wallPenalty) : 0;
+    const curbMarginPenalty =
+      colSampleCnt > 0 ? 0.32 * Math.min(1, (curbHitCnt / colSampleCnt) * 2) : 0;
+    const totalColPenalty = wallPenalty + curbMarginPenalty;
+    const fScore = farCnt > 0 ? Math.max(0, farSum / farCnt - totalColPenalty) : 0;
+    const nScore = nearCnt > 0 ? Math.max(0, nearSum / nearCnt - totalColPenalty) : 0;
     rawFarScores[c] = fScore;
     rawNearScores[c] = nScore;
     rawCombinedScores[c] = 0.46 * fScore + 0.54 * nScore;
@@ -614,13 +769,549 @@ export function analyzeRgbaFrame(
   };
 }
 
+interface MinimapCandidate {
+  x: number;
+  y: number;
+  area: number;
+  ribbonScore: number;
+}
+
+export class MinimapTracker {
+  private prevCandidates: MinimapCandidate[] = [];
+  private prevPos: [number, number] | null = null;
+  private history: Array<[number, number]> = [];
+  private hx = 0;
+  private hy = -1;
+  private headingValid = false;
+  private speed = 0;
+  private distance = 0;
+  private lastTurnAhead = 0;
+
+  reset(): void {
+    this.prevCandidates = [];
+    this.prevPos = null;
+    this.history = [];
+    this.hx = 0;
+    this.hy = -1;
+    this.headingValid = false;
+    this.speed = 0;
+    this.distance = 0;
+    this.lastTurnAhead = 0;
+  }
+
+  getSummary(): MinimapReading {
+    return {
+      visible: this.prevPos !== null,
+      onRibbon: this.prevPos !== null,
+      ribbonPixels: 0,
+      playerPos: this.prevPos ? [...this.prevPos] : null,
+      headingDeg: this.headingValid
+        ? Number(((Math.atan2(this.hy, this.hx) * 180) / Math.PI).toFixed(1))
+        : null,
+      headingValid: this.headingValid,
+      turnAhead: this.lastTurnAhead,
+      speed: this.speed,
+      distance: this.distance,
+    };
+  }
+
+  step(
+    rgba: Uint8ClampedArray,
+    mmW: number,
+    mmH: number,
+  ): MinimapReading {
+    const scale = mmW / 64;
+    const total = mmW * mmH;
+    const ribbonMask = new Uint8Array(total);
+    let ribbonPixels = 0;
+
+    // 1. Segment light-grey / white / pale-cyan track ribbon, ignoring outer 2px border
+    for (let y = 2; y < mmH - 2; y++) {
+      for (let x = 2; x < mmW - 2; x++) {
+        const idx = (y * mmW + x) * 4;
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        const lum = (r + g + b) / 3;
+        const maxC = Math.max(r, g, b);
+        const minC = Math.min(r, g, b);
+        if (lum > 145 && maxC - minC < 52) {
+          ribbonMask[y * mmW + x] = 1;
+          ribbonPixels++;
+        }
+      }
+    }
+
+    const visible = ribbonPixels >= Math.max(10, Math.round(16 * scale * scale));
+    if (!visible) {
+      return {
+        visible: false,
+        onRibbon: false,
+        ribbonPixels,
+        playerPos: null,
+        headingDeg: this.headingValid
+          ? Number(((Math.atan2(this.hy, this.hx) * 180) / Math.PI).toFixed(1))
+          : null,
+        headingValid: this.headingValid,
+        turnAhead: 0,
+        speed: 0,
+        distance: Number(this.distance.toFixed(2)),
+      };
+    }
+
+    // 2. Find red player marker blobs (up to 4 candidate centroids)
+    const redMask = new Uint8Array(total);
+    for (let y = 2; y < mmH - 2; y++) {
+      for (let x = 2; x < mmW - 2; x++) {
+        const idx = (y * mmW + x) * 4;
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        if (r > 165 && r - g > 45 && r - b > 25) {
+          redMask[y * mmW + x] = 1;
+        }
+      }
+    }
+
+    const visited = new Uint8Array(total);
+    const maxArea = Math.max(80, Math.floor(total * 0.06));
+    const candidates: MinimapCandidate[] = [];
+    const tinyCandidates: MinimapCandidate[] = [];
+    const queue = new Int32Array(total);
+
+    for (let y = 2; y < mmH - 2; y++) {
+      for (let x = 2; x < mmW - 2; x++) {
+        const start = y * mmW + x;
+        if (!redMask[start] || visited[start]) continue;
+        let head = 0;
+        let tail = 0;
+        queue[tail++] = start;
+        visited[start] = 1;
+        let sumX = 0;
+        let sumY = 0;
+        let area = 0;
+
+        while (head < tail) {
+          const cur = queue[head++];
+          const cx = cur % mmW;
+          const cy = Math.floor(cur / mmW);
+          sumX += cx;
+          sumY += cy;
+          area++;
+
+          const neighbors = [cur - 1, cur + 1, cur - mmW, cur + mmW];
+          for (const nb of neighbors) {
+            if (nb < 0 || nb >= total) continue;
+            if (!redMask[nb] || visited[nb]) continue;
+            visited[nb] = 1;
+            queue[tail++] = nb;
+          }
+        }
+
+        if (area <= maxArea) {
+          const cx = sumX / area;
+          const cy = sumY / area;
+          let rHits = 0;
+          const rad = Math.max(3, Math.round(5 * scale));
+          for (let ry = -rad; ry <= rad; ry++) {
+            for (let rx = -rad; rx <= rad; rx++) {
+              const px = Math.round(cx + rx);
+              const py = Math.round(cy + ry);
+              if (px >= 0 && px < mmW && py >= 0 && py < mmH) {
+                if (ribbonMask[py * mmW + px]) rHits++;
+              }
+            }
+          }
+          const cand: MinimapCandidate = { x: cx, y: cy, area, ribbonScore: rHits };
+          if (area >= 2) candidates.push(cand);
+          else tinyCandidates.push(cand);
+        }
+      }
+    }
+
+    const pool = candidates.length > 0 ? candidates : tinyCandidates;
+    pool.sort((a, b) => b.ribbonScore - a.ribbonScore || b.area - a.area);
+    const topPool = pool.slice(0, 4);
+
+    if (topPool.length === 0) {
+      return {
+        visible: true,
+        onRibbon: false,
+        ribbonPixels,
+        playerPos: null,
+        headingDeg: this.headingValid
+          ? Number(((Math.atan2(this.hy, this.hx) * 180) / Math.PI).toFixed(1))
+          : null,
+        headingValid: this.headingValid,
+        turnAhead: 0,
+        speed: 0,
+        distance: Number(this.distance.toFixed(2)),
+      };
+    }
+
+    // 3. Match moving player blob across frames & reject static red finish-line tick
+    const maxStep = mmW * 0.28;
+    const minMoveThresh = 0.35 * scale;
+    let chosen: MinimapCandidate = topPool[0];
+    let switchedFromStatic = false;
+    let switchAnchor: [number, number] | null = null;
+
+    if (this.prevCandidates.length > 0) {
+      let bestScore = -Infinity;
+      for (const c of topPool) {
+        let minOldDist = Infinity;
+        let closestOld: MinimapCandidate | null = null;
+        for (const old of this.prevCandidates) {
+          const d = Math.hypot(c.x - old.x, c.y - old.y);
+          if (d < minOldDist) {
+            minOldDist = d;
+            closestOld = old;
+          }
+        }
+        const dPrev = this.prevPos
+          ? Math.hypot(c.x - this.prevPos[0], c.y - this.prevPos[1])
+          : Infinity;
+        const isMovingMatch = minOldDist >= minMoveThresh && minOldDist <= maxStep;
+        const isStationary = minOldDist < 0.22 * scale;
+
+        let score = Math.min(20, c.ribbonScore) * 0.25 + Math.min(12, c.area) * 0.15;
+        if (isMovingMatch) score += 25;
+        else if (isStationary) score -= 8;
+        if (dPrev <= mmW * 0.22) score += 8 - dPrev * 0.2;
+
+        if (score > bestScore) {
+          bestScore = score;
+          chosen = c;
+          if (isMovingMatch && this.prevPos && dPrev > mmW * 0.22 && closestOld) {
+            switchedFromStatic = true;
+            switchAnchor = [closestOld.x, closestOld.y];
+          }
+        }
+      }
+    }
+
+    this.prevCandidates = topPool;
+    const chosenPos: [number, number] = [chosen.x, chosen.y];
+
+    if (switchedFromStatic && switchAnchor) {
+      this.history = [switchAnchor, chosenPos];
+      this.headingValid = false;
+      this.prevPos = switchAnchor;
+    }
+
+    if (this.prevPos) {
+      const stepDist = Math.hypot(
+        chosenPos[0] - this.prevPos[0],
+        chosenPos[1] - this.prevPos[1],
+      );
+      if (stepDist > maxStep) {
+        // Teleport (Lakitu / rescue) resets local heading anchor without discarding cumulative distance
+        this.history = [chosenPos];
+        this.headingValid = false;
+        this.speed = 0;
+      } else {
+        this.distance += stepDist;
+        this.speed = Number(stepDist.toFixed(3));
+        this.history.push(chosenPos);
+        if (this.history.length > 10) this.history.shift();
+
+        const minAnchorDist = 1.4 * scale;
+        let anchor: [number, number] | null = null;
+        for (let i = 0; i < this.history.length - 1; i++) {
+          const hPt = this.history[i];
+          const d = Math.hypot(chosenPos[0] - hPt[0], chosenPos[1] - hPt[1]);
+          if (d >= minAnchorDist) {
+            anchor = hPt;
+            break;
+          }
+        }
+        if (anchor) {
+          const dx = chosenPos[0] - anchor[0];
+          const dy = chosenPos[1] - anchor[1];
+          const len = Math.hypot(dx, dy);
+          if (len > 1e-4) {
+            const ux = dx / len;
+            const uy = dy / len;
+            if (!this.headingValid) {
+              this.hx = ux;
+              this.hy = uy;
+              this.headingValid = true;
+            } else {
+              const alpha = 0.48;
+              const bx = this.hx * (1 - alpha) + ux * alpha;
+              const by = this.hy * (1 - alpha) + uy * alpha;
+              const bLen = Math.hypot(bx, by);
+              if (bLen > 1e-4) {
+                this.hx = bx / bLen;
+                this.hy = by / bLen;
+              }
+            }
+          }
+        }
+      }
+    } else {
+      this.history = [chosenPos];
+      this.speed = 0;
+    }
+
+    this.prevPos = chosenPos;
+
+    // 4. On-ribbon check in 5x5 neighborhood around tracked player dot
+    let nearbyRibbon = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const px = Math.round(chosenPos[0] + dx);
+        const py = Math.round(chosenPos[1] + dy);
+        if (px >= 0 && px < mmW && py >= 0 && py < mmH) {
+          if (ribbonMask[py * mmW + px]) nearbyRibbon++;
+        }
+      }
+    }
+    const onRibbon = nearbyRibbon >= 2;
+
+    // 5. Ego-centric forward arc casting along unit heading (hx, hy)
+    // Kart right vector in screen space (+x right, +y down) is (-hy, hx).
+    let turnAhead = 0;
+    if (this.headingValid) {
+      const rx = -this.hy;
+      const ry = this.hx;
+      const anglesDeg: number[] = [];
+      for (let a = -80; a <= 80; a += 10) anglesDeg.push(a);
+      const rawRay = new Float64Array(anglesDeg.length);
+      const radii = [4.5 * scale, 7.5 * scale, 10.5 * scale];
+
+      for (let i = 0; i < anglesDeg.length; i++) {
+        const rad = (anglesDeg[i] * Math.PI) / 180;
+        const dirX = Math.cos(rad) * this.hx + Math.sin(rad) * rx;
+        const dirY = Math.cos(rad) * this.hy + Math.sin(rad) * ry;
+        let hitScore = 0;
+
+        for (const r of radii) {
+          const sx = chosenPos[0] + dirX * r;
+          const sy = chosenPos[1] + dirY * r;
+          let matched = false;
+          for (let oy = -1; oy <= 1 && !matched; oy++) {
+            for (let ox = -1; ox <= 1 && !matched; ox++) {
+              const px = Math.round(sx + ox);
+              const py = Math.round(sy + oy);
+              if (px >= 0 && px < mmW && py >= 0 && py < mmH) {
+                if (ribbonMask[py * mmW + px]) matched = true;
+              }
+            }
+          }
+          if (matched) hitScore += 1 / radii.length;
+        }
+        rawRay[i] = hitScore;
+      }
+
+      const smoothRay = new Float64Array(anglesDeg.length);
+      for (let i = 0; i < anglesDeg.length; i++) {
+        const l = i > 0 ? rawRay[i - 1] : rawRay[i];
+        const r = i < anglesDeg.length - 1 ? rawRay[i + 1] : rawRay[i];
+        smoothRay[i] = 0.25 * l + 0.5 * rawRay[i] + 0.25 * r;
+      }
+
+      const thresh = 0.3;
+      let bestScore = -1;
+      let bestAngle = 0;
+      let k = 0;
+      while (k < anglesDeg.length) {
+        if (smoothRay[k] <= thresh) {
+          k++;
+          continue;
+        }
+        let end = k;
+        let wSum = 0;
+        let waSum = 0;
+        let runScore = 0;
+        while (end < anglesDeg.length && smoothRay[end] > thresh) {
+          const ex = smoothRay[end] - thresh + 0.05;
+          const w = ex * ex;
+          wSum += w;
+          waSum += w * anglesDeg[end];
+          runScore +=
+            smoothRay[end] * smoothRay[end] * (1 - 0.08 * (Math.abs(anglesDeg[end]) / 80));
+          end++;
+        }
+        if (runScore > bestScore && wSum > 1e-6) {
+          bestScore = runScore;
+          bestAngle = waSum / wSum;
+        }
+        k = end;
+      }
+
+      if (bestScore > 0) {
+        turnAhead = Number(Math.max(-1, Math.min(1, bestAngle / 65)).toFixed(3));
+      }
+    }
+
+    this.lastTurnAhead = turnAhead;
+
+    return {
+      visible: true,
+      onRibbon,
+      ribbonPixels,
+      playerPos: [Number(chosenPos[0].toFixed(2)), Number(chosenPos[1].toFixed(2))],
+      headingDeg: this.headingValid
+        ? Number(((Math.atan2(this.hy, this.hx) * 180) / Math.PI).toFixed(1))
+        : null,
+      headingValid: this.headingValid,
+      turnAhead,
+      speed: this.speed,
+      distance: Number(this.distance.toFixed(2)),
+    };
+  }
+}
+
+export function analyzeMinimapRgba(
+  rgba: Uint8ClampedArray,
+  mmW: number,
+  mmH: number,
+  tracker: MinimapTracker,
+): MinimapReading {
+  return tracker.step(rgba, mmW, mmH);
+}
+
+/**
+ * Detects SuperTuxKart's genuine post-race results modal ONLY when HUD minimap
+ * and speedometer arc have disappeared and a structured centered modal panel is visible.
+ * Never triggers on `1/1` lap HUD or AI opponent checkered flags.
+ */
+export function detectRaceFinished(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  minimapVisible: boolean,
+): boolean {
+  if (minimapVisible || width < 40 || height < 30) return false;
+
+  // 1. Check bottom-right speedometer bright white/cyan arc (x: 0.82..0.97, y: 0.74..0.96)
+  let speedoBright = 0;
+  let speedoTotal = 0;
+  const spX0 = Math.floor(width * 0.82);
+  const spX1 = Math.floor(width * 0.97);
+  const spY0 = Math.floor(height * 0.74);
+  const spY1 = Math.floor(height * 0.96);
+  for (let y = spY0; y < spY1; y++) {
+    for (let x = spX0; x < spX1; x++) {
+      const idx = (y * width + x) * 4;
+      const r = rgba[idx];
+      const g = rgba[idx + 1];
+      const b = rgba[idx + 2];
+      const lum = (r + g + b) / 3;
+      if (lum > 215 || (b > 175 && g > 135 && b - r > 55)) {
+        speedoBright++;
+      }
+      speedoTotal++;
+    }
+  }
+  if (speedoTotal > 0 && speedoBright / speedoTotal > 0.06) {
+    return false;
+  }
+
+  // 2. Sample center modal interior (x: 0.22..0.78, y: 0.20..0.78)
+  const inX0 = Math.floor(width * 0.22);
+  const inX1 = Math.floor(width * 0.78);
+  const inY0 = Math.floor(height * 0.2);
+  const inY1 = Math.floor(height * 0.78);
+
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  let textEdges = 0;
+  let edgeSamples = 0;
+
+  for (let y = inY0; y < inY1; y += 2) {
+    for (let x = inX0; x < inX1; x += 2) {
+      const idx = (y * width + x) * 4;
+      const r = rgba[idx];
+      const g = rgba[idx + 1];
+      const b = rgba[idx + 2];
+      rs.push(r);
+      gs.push(g);
+      bs.push(b);
+
+      if (x + 1 < inX1 && y + 1 < inY1) {
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const rIdx = (y * width + (x + 1)) * 4;
+        const dIdx = ((y + 1) * width + x) * 4;
+        const rLum = 0.299 * rgba[rIdx] + 0.587 * rgba[rIdx + 1] + 0.114 * rgba[rIdx + 2];
+        const dLum = 0.299 * rgba[dIdx] + 0.587 * rgba[dIdx + 1] + 0.114 * rgba[dIdx + 2];
+        if (Math.abs(lum - rLum) > 42 || Math.abs(lum - dLum) > 42) {
+          textEdges++;
+        }
+        edgeSamples++;
+      }
+    }
+  }
+
+  if (rs.length < 20 || edgeSamples < 20) return false;
+  const textEdgeRatio = textEdges / edgeSamples;
+  if (textEdgeRatio < 0.035) return false;
+
+  const sortedR = [...rs].sort((a, b) => a - b);
+  const sortedG = [...gs].sort((a, b) => a - b);
+  const sortedB = [...bs].sort((a, b) => a - b);
+  const mid = Math.floor(rs.length / 2);
+  const medR = sortedR[mid];
+  const medG = sortedG[mid];
+  const medB = sortedB[mid];
+  const medLum = (medR + medG + medB) / 3;
+  if (medLum < 30 || medLum > 228) return false;
+
+  let matchingModal = 0;
+  for (let i = 0; i < rs.length; i++) {
+    if (rgbColorDistance(rs[i], gs[i], bs[i], medR, medG, medB) < 0.14) {
+      matchingModal++;
+    }
+  }
+  const bgCohesion = matchingModal / rs.length;
+  if (bgCohesion < 0.45) return false;
+
+  // 3. Outer side margins (x < 0.11 or x > 0.89) must contrast distinctly from centered modal background
+  let outR = 0;
+  let outG = 0;
+  let outB = 0;
+  let outCnt = 0;
+  const leftEnd = Math.floor(width * 0.11);
+  const rightStart = Math.floor(width * 0.89);
+  for (let y = inY0; y < inY1; y += 2) {
+    for (let x = 2; x < leftEnd; x += 2) {
+      const idx = (y * width + x) * 4;
+      outR += rgba[idx];
+      outG += rgba[idx + 1];
+      outB += rgba[idx + 2];
+      outCnt++;
+    }
+    for (let x = rightStart; x < width - 2; x += 2) {
+      const idx = (y * width + x) * 4;
+      outR += rgba[idx];
+      outG += rgba[idx + 1];
+      outB += rgba[idx + 2];
+      outCnt++;
+    }
+  }
+  if (outCnt === 0) return false;
+  outR /= outCnt;
+  outG /= outCnt;
+  outB /= outCnt;
+
+  const outerDiff = rgbColorDistance(outR, outG, outB, medR, medG, medB);
+  return outerDiff >= 0.08;
+}
+
 export class VideoCaptureEngine {
   private analysisCanvas: HTMLCanvasElement;
   private analysisCtx: CanvasRenderingContext2D;
+  private minimapCanvas: HTMLCanvasElement;
+  private minimapCtx: CanvasRenderingContext2D;
+  private minimapTracker = new MinimapTracker();
   private prevAnalysisRgba: Uint8ClampedArray | null = null;
   private roadModel: RoadColorModel = createInitialRoadModel();
   private readonly analysisW = 160;
   private readonly analysisH = 120;
+  private readonly minimapW = 64;
+  private readonly minimapH = 64;
 
   constructor() {
     this.analysisCanvas = document.createElement("canvas");
@@ -629,10 +1320,21 @@ export class VideoCaptureEngine {
     const ctx = this.analysisCanvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) throw new Error("Failed to initialize 2D analysis canvas context");
     this.analysisCtx = ctx;
+
+    this.minimapCanvas = document.createElement("canvas");
+    this.minimapCanvas.width = this.minimapW;
+    this.minimapCanvas.height = this.minimapH;
+    const mCtx = this.minimapCanvas.getContext("2d", { willReadFrequently: true });
+    if (!mCtx) throw new Error("Failed to initialize 2D minimap canvas context");
+    this.minimapCtx = mCtx;
   }
 
   resetTracking(): void {
     this.prevAnalysisRgba = null;
+  }
+
+  resetMinimap(): void {
+    this.minimapTracker.reset();
   }
 
   resetRoadModel(): void {
@@ -688,11 +1390,55 @@ export class VideoCaptureEngine {
       this.analysisH,
       this.roadModel,
     );
+
+    const dims = this.getSurfaceDimensions(surface);
+    let minimap: MinimapReading | undefined;
+    if (dims.w > 0 && dims.h > 0) {
+      const mx = 0;
+      const my = Math.floor(dims.h * 0.58);
+      const mw = Math.max(2, Math.floor(dims.w * 0.28));
+      const mh = Math.max(2, Math.floor(dims.h * 0.41));
+      this.minimapCtx.drawImage(
+        surface,
+        mx,
+        my,
+        mw,
+        mh,
+        0,
+        0,
+        this.minimapW,
+        this.minimapH,
+      );
+      const mmImg = this.minimapCtx.getImageData(0, 0, this.minimapW, this.minimapH);
+      minimap = analyzeMinimapRgba(
+        mmImg.data,
+        this.minimapW,
+        this.minimapH,
+        this.minimapTracker,
+      );
+    }
+
+    const activeMinimapPresent = Boolean(
+      minimap?.visible &&
+        minimap.onRibbon &&
+        minimap.ribbonPixels < this.minimapW * this.minimapH * 0.35,
+    );
+    const raceFinishedCandidate = detectRaceFinished(
+      rgba,
+      this.analysisW,
+      this.analysisH,
+      activeMinimapPresent,
+    );
+
     if (mutateModel) {
       this.prevAnalysisRgba = rgba;
       this.roadModel = analysis.updatedRoadModel;
     }
-    return analysis;
+    return {
+      ...analysis,
+      minimap,
+      raceFinishedCandidate,
+    };
   }
 
   captureFullFrame(surface: HTMLCanvasElement | HTMLVideoElement): HTMLCanvasElement | null {
@@ -715,6 +1461,7 @@ export class VideoCaptureEngine {
     analysis: FrameAnalysis,
     tileW = 320,
     tileH = 240,
+    depth?: { corridorOffsetX: number; centerClearance: number } | null,
   ): FrameSample {
     const tile = document.createElement("canvas");
     tile.width = tileW;
@@ -736,6 +1483,10 @@ export class VideoCaptureEngine {
       roadOffsetX: analysis.roadOffsetX,
       roadCurvature: analysis.roadCurvature,
       roadConfidence: analysis.roadConfidence,
+      depthCorridorX: depth?.corridorOffsetX,
+      depthClearance: depth?.centerClearance,
+      minimapTurnAhead: analysis.minimap?.turnAhead,
+      minimapHeadingDeg: analysis.minimap?.headingDeg,
     };
   }
 }
@@ -780,6 +1531,17 @@ function drawTileAnnotations(
     ctx.lineTo(px, py + 7);
     ctx.lineTo(px - 7, py);
     ctx.closePath();
+    ctx.stroke();
+  }
+
+  // In-page 3D depth corridor marker (emerald circle at y=0.37)
+  if (typeof sample.depthCorridorX === "number") {
+    const dx = x0 + ((sample.depthCorridorX + 1) * 0.5) * w;
+    const dy = y0 + h * 0.37;
+    ctx.strokeStyle = "#4ade80";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(dx, dy, 6, 0, Math.PI * 2);
     ctx.stroke();
   }
 
@@ -837,6 +1599,9 @@ export function buildContactSheetCanvas(
     durationMs: number;
     avgMotion: number;
     avgRoadConfidence: number;
+    depthFramesUsed?: number;
+    unwedgeCount?: number;
+    minimapTurnAhead?: number;
   },
   crops: CropRegion[] = DEFAULT_STK_CROPS,
 ): HTMLCanvasElement {
@@ -879,7 +1644,14 @@ export function buildContactSheetCanvas(
   ctx.fillRect(0, 0, totalW, headerH);
   ctx.fillStyle = "#f8fafc";
   ctx.font = "bold 15px ui-monospace, Menlo, monospace";
-  const headerText = `${summary.label} | stop=${summary.stopReason} | ${Math.round(summary.durationMs)}ms | avgΔ=${(summary.avgMotion * 100).toFixed(1)}% | roadConf=${(summary.avgRoadConfidence * 100).toFixed(0)}%`;
+  const extras: string[] = [];
+  if (summary.depthFramesUsed) extras.push(`d3=${summary.depthFramesUsed}`);
+  if (summary.unwedgeCount) extras.push(`uw=${summary.unwedgeCount}`);
+  if (typeof summary.minimapTurnAhead === "number" && Math.abs(summary.minimapTurnAhead) > 0.05) {
+    extras.push(`mm=${summary.minimapTurnAhead >= 0 ? "+" : ""}${summary.minimapTurnAhead.toFixed(2)}`);
+  }
+  const extraStr = extras.length > 0 ? ` | ${extras.join(" ")}` : "";
+  const headerText = `${summary.label} | stop=${summary.stopReason} | ${Math.round(summary.durationMs)}ms | avgΔ=${(summary.avgMotion * 100).toFixed(1)}% | roadConf=${(summary.avgRoadConfidence * 100).toFixed(0)}%${extraStr}`;
   ctx.fillText(headerText, 12, 24);
 
   // Grid tiles

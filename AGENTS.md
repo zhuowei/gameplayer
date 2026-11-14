@@ -7,7 +7,8 @@
 - Never patch game binaries, read game memory, or query internal engine state.
 
 ## Repository Structure & Commands
-- `packages/runtime/`: Injected browser runtime (`window.gameplayApi` `v4.0.0`) providing virtual Xbox-layout gamepad control, 30 Hz biome-agnostic Pure-Pursuit pixel servoing (`driveServo`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), road-model reset (`resetRoadModel`), and annotated 4×2 contact-sheet overlays.
+- `packages/runtime/`: Injected browser runtime (`window.gameplayApi` `v5.0.0`) providing virtual Xbox-layout gamepad control, 30 Hz biome-agnostic Pure-Pursuit pixel servoing (`driveServo`, default `7000ms` adaptive horizon), non-blocking `280×210` Depth Anything V2 Small Web Worker inference (`initDepthEngine` / `getDepthStatus`), 30 Hz temporal minimap odometry (`MinimapTracker`), local `autoUnwedge` stuck recovery, post-race finish detection (`stopOnRaceFinish`), safe scripted chunks (`runChunk`), rescue helpers (`smartRescue`), road-model reset (`resetRoadModel`), and annotated 4×2 contact-sheet overlays.
+- `scripts/build-depth-bundle.ts`: Packages `onnxruntime-web` WASM + cached Depth Anything V2 Small weights into gitignored `.cache/gameplay-depth-bundle.js` during `bun run build`.
 - `packages/perception/`: Offline third-party 3D depth & OpenCV analyzer CLI (`bun run perceive <screenshot.jpg>`) powered by quantized **Depth Anything V2 Small** (`@huggingface/transformers`), **OpenCV 5.0** (`@techstark/opencv-js`), and **`sharp`** (runs inside Standard Sandbox Mode with `BypassSandbox: false`).
 - `packages/browsertool/`: Zero-dependency Bun CLI for raw Chrome DevTools Protocol (`ws://127.0.0.1:9222`) when running outside network-isolated sandboxes.
 - `skills/gameplay/`: Progressive-disclosure gameplay skill ([SKILL.md](skills/gameplay/SKILL.md)) and game-specific runbooks ([supertuxkart.md](skills/gameplay/references/supertuxkart.md)).
@@ -23,8 +24,8 @@ bun test
 1. **Prefer `chrome-devtools` MCP inside Antigravity**:
    - MCP tools (`list_pages`, `evaluate_script`, `take_screenshot`) work inside the standard sandbox without `BypassSandbox: true`.
    - `packages/browsertool` connects to `127.0.0.1:9222` over WebSocket, which is blocked in network-isolated sandboxes unless `BypassSandbox: true` is used.
-2. **Inline runtime injection & screenshot paths**:
-   - In `chrome-devtools` MCP `evaluate_script`, pass the compiled bundle (`packages/runtime/gameplay-runtime.js` or a minified build) inline via `function` with `format: "script"`. Avoid `sourcePath` and `take_screenshot` `filePath` when MCP `workspaceRoots` is unconfigured; read the auto-saved screenshot path returned by `take_screenshot`.
+2. **Runtime injection (`sourcePath` when `--workspace` is configured, else inline) & screenshot paths**:
+   - When `chrome-devtools` MCP has `--workspace /Users/zhuowei/Documents/antigravity/gameplay` configured, inject `.cache/gameplay-depth-bundle.js` and `packages/runtime/gameplay-runtime.js` via `evaluate_script` with `sourcePath` and `format: "script"` (zero LLM context tokens). If `workspaceRoots` is unconfigured, fall back to passing `packages/runtime/gameplay-runtime.js` inline via `function` with `format: "script"`. Omit `take_screenshot` `filePath` and read the auto-saved screenshot path returned by `take_screenshot`.
 3. **Never use `screencast_start` + `ffmpeg` slow-motion loops for turn-by-turn control**:
    - Recording `.mp4` chunks and re-encoding via `ffmpeg` adds 25–75s latency per move and bloats multimodal context. Use `gameplayApi`'s in-canvas contact-sheet overlay + a single JPEG `take_screenshot` (`quality: 85`).
 

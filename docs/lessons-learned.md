@@ -128,6 +128,16 @@ Moving four deterministic/geometric capabilities from the `0.05 Hz` VLM loop int
 
 With those four upgrades in System 1, System 2 (the VLM) shifts from a **2.5-second micro-chauffeur** (`108` calls/lap) to an **event-driven / asynchronous tactical supervisor** (`~8–15` check-ins/lap for menus, true forks, item strategy, and double-stuck anomalies), cutting unseen-track wall-clock time from **~45 minutes to ~3–5 minutes** and in-game lap times from **~6–7 minutes toward ~2.5 minutes**.
 
+### D. Implemented: Runtime v5 (`5.0.0`) In-Loop 3D Depth Worker + 30 Hz Minimap Odometry
+
+All four upgrades above—plus the Run 5 curb-stripe and underwater stone-pillar fixes—have now been implemented in `window.gameplayApi` (`v5.0.0`):
+
+1. **In-Page `Depth Anything V2 Small` `Blob` Web Worker (`src/depth.ts`, `scripts/build-depth-bundle.ts`)**: `bun run build` bundles `ort.wasm.bundle.min.mjs` (wrapped cleanly without double-bundling), `ort-wasm-simd-threaded.wasm`, and quantized `model_quantized.onnx` into `.cache/gameplay-depth-bundle.js`, which loads via MCP `--workspace` `sourcePath` with zero LLM token overhead and zero localhost network calls. Inside `https://jane.local/`, `initDepthEngine()` runs natively in `mode: "worker"` at **`280×210`** (~540–550ms/frame in Chrome WASM, `0ms` main-thread stall, falling back automatically to discrete `main_thread` calls if CSP blocks `blob:` Workers). Crucially, benchmarking showed `< 280px` width (e.g. `168×126`) collapses Depth Anything V2's ViT positional embeddings and produces false `1.0` center clearance, so `280×210` is an enforced floor.
+2. **30 Hz Stateful `MinimapTracker` (`src/vision.ts`)**: Crops `w: 0.28, h: 0.41` (widened from `0.23` after 4:3 live testing caught right-lobe clipping), tracks moving player red centroids across frames while rejecting static finish-line ticks, clears stale heading on teleports, and casts rays along kart right vector `(rx, ry) = (-hy, hx)` to output ego-centric `minimapTurnAhead` in `[-1, +1]`.
+3. **Curb-Stripe, Pillar & Scoreboard Guards (`src/vision.ts`)**: Weighted center-nose bridge seeding (2× over outer wheels), striped cyan/red/white curb penalties (`0.72` / `0.55` + `0.32` column margin), underwater blue-stone vertical column continuity rejection, and `detectRaceFinished` (gating on active minimap ribbon absence, speedometer arc absence, and cohesive scoreboard modal edges so it skips `BTN.START` pause only on genuine completion).
+4. **In-Loop `autoUnwedge` & `7000ms` Horizon (`src/controller.ts`)**: Tightened `autoCornerBrake` (`elapsed > 1100`, `motionScore > 0.042`, confirmed lateral/3D corner), up to 2 bounded `autoUnwedge` reverse-and-turn maneuvers toward the highest-clearance 3D/minimap sector, and a default **`7000ms`** `driveServo` horizon.
+5. **Live Chrome Verification (*Antediluvian Abyss*)**: Three consecutive `7000ms` v5 segments (`smoke-seg-1..3`: `7.26s`, `7.57s`, `7.59s`) executed smoothly with `depthFramesUsed = 12` per segment (`540.5–549.6ms/frame` Worker latency), `60–67%` `roadConfidence` on the grated start bridge, `unwedgeCount = 0`, and zero host `perceive` calls, leaving SuperTuxKart cleanly on the Main Menu.
+
 ---
 
 ## 5. Would a Future Agent Solve This Task & Generalize to Other Real-Time Games?

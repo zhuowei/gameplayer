@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { BTN, createGamepadController } from "./gamepad";
-import { analyzeRgbaFrame, createInitialRoadModel, type VideoCaptureEngine } from "./vision";
+import {
+  analyzeMinimapRgba,
+  analyzeRgbaFrame,
+  createInitialRoadModel,
+  detectRaceFinished,
+  MinimapTracker,
+  type VideoCaptureEngine,
+} from "./vision";
+import { analyzeDisparityMap, rgbaToNormalizedChwTensor, type DepthEngineLike } from "./depth";
 import { computePidSteer, createGameplayOrchestrator } from "./controller";
 
 function createMockBrowserEnv(readyState: DocumentReadyState = "complete") {
@@ -443,5 +451,432 @@ describe("vision & PID servo", () => {
     });
     expect(res.ok).toBe(true);
     expect(res.meanSteerX).toBeGreaterThan(0);
+  });
+
+  test("seeds two-tone grated bridge deck and rejects cyan/blue-white striped curbs", () => {
+    const w = 160;
+    const h = 120;
+    const bridgeFrame = makeTestFrame(w, h, (x, y) => {
+      if (y < 40) return [32, 85, 138]; // twilight underwater backdrop
+      // Striped cyan/blue + stark white curbs on both left and right edges
+      const inLeftCurb = x >= 26 && x < 42;
+      const inRightCurb = x >= 118 && x < 134;
+      if (inLeftCurb || inRightCurb) {
+        return Math.floor(y / 3) % 2 === 0 ? [28, 155, 232] : [236, 240, 246];
+      }
+      // Two-tone grated bridge slats down center (x: 42..118)
+      if (x >= 42 && x < 118) {
+        return x % 4 < 2 ? [76, 84, 94] : [102, 110, 120];
+      }
+      return [24, 52, 88]; // abyss sides
+    });
+
+    let model = createInitialRoadModel();
+    const res1 = analyzeRgbaFrame(bridgeFrame, null, w, h, model);
+    model = res1.updatedRoadModel;
+    expect(model.initialized).toBe(true);
+    // Road model must lock onto slate bridge deck (not saturated cyan curb paint)
+    expect(model.b - model.r).toBeLessThan(28);
+    expect(res1.roadConfidence).toBeGreaterThan(0.45);
+    expect(Math.abs(res1.roadOffsetX)).toBeLessThan(0.18);
+  });
+
+  test("rejects underwater vertical stone colonnade pillars without mistaking them for open sky", () => {
+    const w = 160;
+    const h = 120;
+    const wetStoneModel = { r: 102, g: 112, b: 128, initialized: true };
+
+    // Wet blue-tinted stone pillar sits dead-center from y=14..110 while right corridor stays open
+    const underwaterPillarFrame = makeTestFrame(w, h, (x, y) => {
+      if (x >= 62 && x <= 96 && y >= 12) {
+        return [88, 112, 144]; // vertical stone column (b - r = 56, lum = 115)
+      }
+      if (y < 45) return [28, 86, 152]; // open underwater ceiling/water
+      if (x >= 34 && x <= 142) return [102, 112, 128]; // wet stone road floor
+      return [24, 48, 72];
+    });
+
+    const res = analyzeRgbaFrame(
+      underwaterPillarFrame,
+      null,
+      w,
+      h,
+      wetStoneModel,
+    );
+    // Open right corridor (96..142) beats dead-center stone pillar
+    expect(res.roadOffsetX).toBeGreaterThan(0.28);
+  });
+
+  test("tracks southbound minimap odometry curving East as kart-left while ignoring static finish icon", () => {
+    const tracker = new MinimapTracker();
+    const mmW = 64;
+    const mmH = 64;
+
+    const drawMinimapFrame = (dotX: number, dotY: number) =>
+      makeTestFrame(mmW, mmH, (x, y) => {
+        // Static red finish-line tick at (46, 18) on far branch
+        if (Math.hypot(x - 46, y - 18) <= 1.6) return [230, 35, 35];
+        // Moving red player marker
+        if (Math.hypot(x - dotX, y - dotY) <= 1.8) return [235, 32, 32];
+        // Vertical track ribbon down x=22 (y=10..34), then bending East (+x, y=34..40, x=22..44)
+        const onVertical = Math.abs(x - 22) <= 1.5 && y >= 10 && y <= 36;
+        const onEastBend = Math.abs(y - 36) <= 1.5 && x >= 22 && x <= 44;
+        const onFarBranch = Math.abs(y - 18) <= 1.5 && x >= 42 && x <= 50;
+        if (onVertical || onEastBend || onFarBranch) return [215, 218, 222];
+        return [20, 26, 36];
+      });
+
+    let last = analyzeMinimapRgba(drawMinimapFrame(22, 16), mmW, mmH, tracker);
+    for (let step = 1; step <= 8; step++) {
+      last = analyzeMinimapRgba(drawMinimapFrame(22, 16 + step * 1.5), mmW, mmH, tracker);
+    }
+    expect(last.visible).toBe(true);
+    expect(last.onRibbon).toBe(true);
+    expect(last.headingValid).toBe(true);
+    // Southbound (+y) in screen coords -> ~ +90 deg
+    expect(last.headingDeg ?? 0).toBeGreaterThan(75);
+    expect(last.headingDeg ?? 0).toBeLessThan(105);
+    // Eastward bend (+x) when facing South (+y) is KART LEFT -> turnAhead < -0.2
+    expect(last.turnAhead).toBeLessThan(-0.2);
+    expect(last.distance).toBeGreaterThan(6);
+  });
+
+  test("fuses 3D depth disparity corridor and executes in-loop autoUnwedge recovery", async () => {
+    // 1. Verify rgbaToNormalizedChwTensor & analyzeDisparityMap
+    const rgba = makeTestFrame(280, 210, () => [128, 128, 128]);
+    const chw = rgbaToNormalizedChwTensor(rgba, 280, 210);
+    expect(chw.length).toBe(3 * 210 * 280);
+
+    const dw = 28;
+    const dh = 21;
+    const disp = new Float32Array(dw * dh);
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        // Sky far (0.1), near ground close (4.5), wall blocking left & center sectors, open right sectors
+        if (y >= dh * 0.7) disp[y * dw + x] = 4.5;
+        else if (y >= dh * 0.25 && y <= dh * 0.5 && x < dw * 0.58) disp[y * dw + x] = 4.2;
+        else disp[y * dw + x] = 0.2;
+      }
+    }
+    const parsedDepth = analyzeDisparityMap(disp, dw, dh);
+    expect(parsedDepth.wallOrObstacleAhead).toBe(true);
+    expect(parsedDepth.corridorOffsetX).toBeGreaterThan(0.3);
+
+    // 2. Verify controller autoUnwedge inside driveServo (recovering from low-motion ticks)
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
+    mockWindow.setTimeout = ((cb: TimerHandler) =>
+      globalThis.setTimeout(cb, 2)) as unknown as typeof window.setTimeout;
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+
+    let modelResetCount = 0;
+    const driveStartMock = performance.now();
+    const fakeCapture = {
+      resetTracking() {},
+      resetRoadModel() {
+        modelResetCount++;
+      },
+      findVideoSurface: () => ({}) as HTMLCanvasElement,
+      sampleAnalysis: () => {
+        const elapsedApprox = performance.now() - driveStartMock;
+        // Once past the 350ms settle window and before autoUnwedge fires resetRoadModel(), stay wedged
+        const wedged = modelResetCount === 0 && elapsedApprox > 360;
+        return {
+          motionScore: wedged ? 0.001 : 0.06,
+          bannerDelta: 0,
+          redAlertRatio: 0,
+          roadOffsetX: 0,
+          roadCurvature: 0,
+          roadConfidence: wedged ? 0.2 : 0.88,
+          updatedRoadModel: createInitialRoadModel(),
+          raceFinishedCandidate: false,
+        };
+      },
+      captureTile: (_s: unknown, tMs: number, axes: number[], buttons: number[], a: { roadOffsetX: number; roadConfidence: number; motionScore: number }) => ({
+        tMs,
+        width: 320,
+        height: 240,
+        canvas: {} as HTMLCanvasElement,
+        axes,
+        buttons,
+        motionScore: a.motionScore,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: a.roadOffsetX,
+        roadCurvature: 0,
+        roadConfidence: a.roadConfidence,
+      }),
+      captureFullFrame: () => ({}) as HTMLCanvasElement,
+    } as unknown as VideoCaptureEngine;
+
+    const fakeDepth: DepthEngineLike = {
+      async init() {
+        return this.getStatus();
+      },
+      getStatus() {
+        return {
+          ready: true,
+          mode: "worker",
+          inputSize: [280, 210],
+          inferencesCompleted: 1,
+          lastInferMs: 42,
+          lastResult: {
+            ...parsedDepth,
+            inferMs: 42,
+            timestamp: performance.now(),
+          },
+        };
+      },
+      submitFrameNonBlocking() {
+        return {
+          ...parsedDepth,
+          inferMs: 42,
+          timestamp: performance.now(),
+        };
+      },
+      async inferOnce() {
+        return this.submitFrameNonBlocking({} as HTMLCanvasElement);
+      },
+    };
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture, fakeDepth);
+    const res = await orch.driveServo({
+      maxDurationMs: 650,
+      tickMs: 12,
+      stuckDurationMs: 60,
+      unwedgeReverseMs: 12,
+      unwedgeForwardMs: 12,
+      unpauseSettleMs: 5,
+      pauseSettleMs: 5,
+      showSheetOverlay: false,
+      label: "seg-unwedge",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.unwedgeCount).toBe(1);
+    expect(res.stuckDetected).toBe(false);
+    expect(res.stopReason).toBe("horizon_complete");
+    expect(res.depthFramesUsed).toBeGreaterThanOrEqual(1);
+    expect(modelResetCount).toBeGreaterThanOrEqual(1);
+  });
+
+  test("detectRaceFinished halts driveServo cleanly and skips BTN.START pause", async () => {
+    const w = 160;
+    const h = 120;
+    // Active race frame WITH speedometer arc + minimap
+    const activeRace = makeTestFrame(w, h, (x, y) => {
+      if (x >= w * 0.84 && y >= h * 0.78) return [240, 245, 255]; // speedometer arc
+      return [95, 102, 110];
+    });
+    expect(detectRaceFinished(activeRace, w, h, true)).toBe(false);
+    expect(detectRaceFinished(activeRace, w, h, false)).toBe(false);
+
+    // Post-race centered scoreboard modal (minimap gone, speedo gone, structured table inside blue box)
+    const resultsModal = makeTestFrame(w, h, (x, y) => {
+      const inBox = x >= w * 0.2 && x <= w * 0.8 && y >= h * 0.16 && y <= h * 0.82;
+      if (inBox) {
+        // Horizontal scoreboard text rows at y = 32, 46, 60, 74
+        if (y % 14 >= 4 && y % 14 <= 8 && x >= w * 0.28 && x <= w * 0.72 && x % 4 !== 0) {
+          return [242, 245, 248];
+        }
+        return [32, 62, 112]; // STK translucent navy scoreboard panel
+      }
+      return [145, 165, 185]; // blurred bright outer background scene
+    });
+    expect(detectRaceFinished(resultsModal, w, h, true)).toBe(false);
+    expect(detectRaceFinished(resultsModal, w, h, false)).toBe(true);
+
+    // Controller stops with stopReason === "race_finished" & skips BTN.START
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
+    const pressedLog: number[][] = [];
+    mockWindow.setTimeout = ((cb: TimerHandler) => {
+      const pad = mockNav.getGamepads()[0];
+      if (pad) {
+        pressedLog.push(pad.buttons.map((b) => (b.pressed ? 1 : 0)));
+      }
+      return globalThis.setTimeout(cb, 2);
+    }) as unknown as typeof window.setTimeout;
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+
+    let tick = 0;
+    const fakeCapture = {
+      resetTracking() {},
+      findVideoSurface: () => ({}) as HTMLCanvasElement,
+      sampleAnalysis: () => {
+        tick++;
+        const postFinish = tick >= 25;
+        return {
+          motionScore: postFinish ? 0.01 : 0.06,
+          bannerDelta: 0,
+          redAlertRatio: 0,
+          roadOffsetX: 0,
+          roadCurvature: 0,
+          roadConfidence: 0.8,
+          updatedRoadModel: createInitialRoadModel(),
+          raceFinishedCandidate: postFinish,
+        };
+      },
+      captureTile: (_s: unknown, tMs: number, axes: number[], buttons: number[]) => ({
+        tMs,
+        width: 320,
+        height: 240,
+        canvas: {} as HTMLCanvasElement,
+        axes,
+        buttons,
+        motionScore: 0.05,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadConfidence: 0.8,
+      }),
+      captureFullFrame: () => ({}) as HTMLCanvasElement,
+    } as unknown as VideoCaptureEngine;
+
+    const origNow = performance.now.bind(performance);
+    let simMs = 0;
+    performance.now = () => {
+      simMs += 110;
+      return simMs;
+    };
+    try {
+      const orch = createGameplayOrchestrator(gp, fakeCapture);
+      const res = await orch.driveServo({
+        maxDurationMs: 7000,
+        tickMs: 5,
+        unpauseSettleMs: 5,
+        pauseSettleMs: 5,
+        showSheetOverlay: false,
+        stopOnRaceFinish: true,
+        label: "seg-finish",
+      });
+      expect(res.raceFinished).toBe(true);
+      expect(res.stopReason).toBe("race_finished");
+      // Ensure BTN.START (9) was NEVER pressed after detecting race finish!
+      const startPressed = pressedLog.some((btns) => btns[BTN.START] === 1);
+      expect(startPressed).toBe(false);
+    } finally {
+      performance.now = origNow;
+    }
+  });
+
+  test("exercises verbatim SKILL.md v5 snippets", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
+    mockWindow.setTimeout = ((cb: TimerHandler) =>
+      globalThis.setTimeout(cb, 2)) as unknown as typeof window.setTimeout;
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+    const fakeCapture = {
+      resetTracking() {},
+      resetRoadModel() {},
+      findVideoSurface: () => ({}) as HTMLCanvasElement,
+      getSurfaceDimensions: () => ({ w: 1024, h: 768 }),
+      sampleAnalysis: () => ({
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadCurvature: 0,
+        roadConfidence: 0.85,
+        updatedRoadModel: createInitialRoadModel(),
+      }),
+      captureTile: (_s: unknown, tMs: number, axes: number[], buttons: number[]) => ({
+        tMs,
+        width: 320,
+        height: 240,
+        canvas: {} as HTMLCanvasElement,
+        axes,
+        buttons,
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadConfidence: 0.85,
+      }),
+      captureFullFrame: () => ({}) as HTMLCanvasElement,
+    } as unknown as VideoCaptureEngine;
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture);
+    (globalThis as unknown as { window: Record<string, unknown> }).window = {
+      ...(globalThis as unknown as { window: Record<string, unknown> }).window,
+      gameplayApi: {
+        version: "5.0.0",
+        BTN,
+        ...gp,
+        ...orch,
+      },
+    };
+
+    const gWin = globalThis as unknown as {
+      window: {
+        gameplayApi: typeof orch & typeof gp & { version: string; BTN: typeof BTN };
+      };
+    };
+
+    // Snippet 1: Inject verification (SKILL.md §1)
+    const verifyFn = async () => ({
+      hasApi: Boolean(gWin.window.gameplayApi),
+      version: gWin.window.gameplayApi?.version,
+      depth: await gWin.window.gameplayApi?.initDepthEngine(),
+      frame: gWin.window.gameplayApi?.inspectFrame(),
+    });
+    const verified = await verifyFn();
+    expect(verified.hasApi).toBe(true);
+    expect(verified.version).toBe("5.0.0");
+    expect(verified.frame?.foundSurface).toBe(true);
+
+    // Snippet 2 & 3: fast-forward performance.now slightly so 7000ms / 6000ms snippets finish in <20ms
+    const origNow = performance.now.bind(performance);
+    let simMs = 0;
+    performance.now = () => {
+      simMs += 1500;
+      return simMs;
+    };
+    try {
+      const resServo = await gWin.window.gameplayApi.driveServo({
+        maxDurationMs: 7000,
+        steerBias: 0,
+        autoUnwedge: true,
+        useInPageDepth: true,
+        useMinimapOdometry: true,
+        stopOnRaceFinish: true,
+        showSheetOverlay: false,
+        unpauseSettleMs: 2,
+        pauseSettleMs: 2,
+        tickMs: 2,
+        label: "seg-corridor",
+      });
+      expect(resServo.ok).toBe(true);
+
+      const resGuided = await gWin.window.gameplayApi.driveServo({
+        maxDurationMs: 6000,
+        depthSteerHint: 0.28,
+        showSheetOverlay: false,
+        unpauseSettleMs: 2,
+        pauseSettleMs: 2,
+        tickMs: 2,
+        label: "seg-depth-guided",
+      });
+      expect(resGuided.ok).toBe(true);
+    } finally {
+      performance.now = origNow;
+    }
+
+    // Snippet 4: runChunk hairpin drift
+    const chunkRes = await gWin.window.gameplayApi.runChunk(
+      async ({ api }) => {
+        await api.rampStick(0, -0.7, 0, 10);
+        api.setButton(api.BTN.RB, 1);
+        await api.sleep(10);
+        api.setButton(api.BTN.RB, 0);
+        await api.rampStick(0, 0, 0, 10);
+        await api.sleep(10);
+      },
+      {
+        holdGasButton: gWin.window.gameplayApi.BTN.Y,
+        label: "seg-sharp-left",
+        showSheetOverlay: false,
+        unpauseSettleMs: 2,
+        pauseSettleMs: 2,
+      },
+    );
+    expect(chunkRes.ok).toBe(true);
   });
 });

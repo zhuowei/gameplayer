@@ -6,11 +6,11 @@ Tools, browser runtime, third-party 3D depth/OpenCV perception, and agent skills
 
 Driving a 30–60 Hz continuous game directly through a 0.1 Hz turn-based LLM tool loop fails due to inference latency, open-loop drift, and video-transcoding overhead. This repository implements a **two-loop + pretrained 3D depth/OpenCV + annotated contact-sheet** stack for browser game streaming clients (MoonlightWeb, Xbox Cloud/Remote Play):
 
-1. **[packages/runtime](packages/runtime/README.md) (`window.gameplayApi` `4.0.0`)**
+1. **[packages/runtime](packages/runtime/README.md) (`window.gameplayApi` `5.0.0`)**
    - Overrides `navigator.getGamepads()` with an Xbox-standard 17-button, 4-axis virtual controller (`BTN`, `setButton`, `tapButton`, `setStick`, `pulseStick`, `rampStick`, `resetAll`).
-   - **System 1 (`driveServo` v4)**: 30 Hz closed-loop biome-agnostic pixel analysis (supports asphalt, dirt, stone, wood, moss, and bright snow/ice; online contrastive off-road shoulder learning; mode-seeking contiguous corridor selection; Pure-Pursuit dual-band curvature lookahead + auto corner braking; optional `depthSteerHint`; and `WRONG WAY!` detection) + PD steering controller.
+   - **System 1 (`driveServo` v5, `7000ms` default adaptive horizon)**: Non-blocking in-page **Depth Anything V2 Small (`280×210`) `Blob` Web Worker** (`initDepthEngine`), **30 Hz stateful `MinimapTracker`** ego-frame odometry & lookahead (`turnAhead`), biome-agnostic pure-pursuit road/shoulder segmentation (with striped-curb & underwater stone-pillar rejection), curvature-coupled throttle & corner braking, in-loop **`autoUnwedge`** stuck recovery, and genuine post-race **`stopOnRaceFinish`** detection.
    - **System 2 (`runChunk`, `smartRescue`, `resetRoadModel`)**: Pause-bounded scripted maneuvers wrapped in `try / finally` so exceptions never leave inputs latched.
-   - **Pre-Pause Annotated Contact Sheets**: Captures unobstructed full-resolution HUD crops (`MINIMAP`, `TUTORIAL PROMPT`, `LOOKAHEAD & ALERT`) *before* pausing and renders a deterministic 4×2 timestamped grid for single-JPEG inspection.
+   - **Pre-Pause Annotated Contact Sheets**: Captures unobstructed full-resolution HUD crops (`MINIMAP`, `TUTORIAL PROMPT`, `LOOKAHEAD & ALERT`) *before* pausing (skipping pause on post-race scoreboards) and renders a deterministic 4×2 timestamped grid for single-JPEG inspection.
 2. **[packages/perception](packages/perception/index.ts) (`bun run perceive`)**
    - Offline host-side 3D & geometric perception CLI (~400 ms inside Standard Sandbox Mode with zero network access) powered by **quantized Depth Anything V2 Small** (`@huggingface/transformers` + `onnxruntime-node`), **OpenCV 5.0** (`@techstark/opencv-js` Canny/Hough vanishing point + Difference-of-Gaussians minimap ribbon & ego-heading curvature), and **`sharp`**.
 3. **[packages/browsertool](packages/browsertool/README.md)**
@@ -26,7 +26,7 @@ Driving a 30–60 Hz continuous game directly through a 0.1 Hz turn-based LLM to
 ## Quick Start
 
 ```sh
-# Bundle packages/runtime/gameplay-runtime.js (v4.0.0)
+# Bundle packages/runtime/gameplay-runtime.js (v5.0.0) & .cache/gameplay-depth-bundle.js
 bun run build
 
 # Run offline Depth Anything V2 + OpenCV perception on a screenshot

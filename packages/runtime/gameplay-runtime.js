@@ -163,9 +163,532 @@
     };
   }
 
+  // packages/runtime/src/depth.ts
+  var DEFAULT_WIDTH = 280;
+  var DEFAULT_HEIGHT = 210;
+  var IMAGENET_MEAN = [0.485, 0.456, 0.406];
+  var IMAGENET_STD = [0.229, 0.224, 0.225];
+  function rgbaToNormalizedChwTensor(rgba, w, h) {
+    const planeSize = w * h;
+    const out = new Float32Array(3 * planeSize);
+    const inv255 = 1 / 255;
+    const invStdR = 1 / IMAGENET_STD[0];
+    const invStdG = 1 / IMAGENET_STD[1];
+    const invStdB = 1 / IMAGENET_STD[2];
+    for (let i = 0;i < planeSize; i++) {
+      const p = i * 4;
+      out[i] = (rgba[p] * inv255 - IMAGENET_MEAN[0]) * invStdR;
+      out[planeSize + i] = (rgba[p + 1] * inv255 - IMAGENET_MEAN[1]) * invStdG;
+      out[2 * planeSize + i] = (rgba[p + 2] * inv255 - IMAGENET_MEAN[2]) * invStdB;
+    }
+    return out;
+  }
+  function analyzeDisparityMap(disparity, dw, dh) {
+    const numSectors = 7;
+    const rawSectorDisp = new Float64Array(numSectors);
+    const y0 = Math.max(0, Math.floor(dh * 0.28));
+    const y1 = Math.max(y0 + 1, Math.floor(dh * 0.46));
+    const xMargin = Math.floor(dw * 0.05);
+    const spanW = dw - 2 * xMargin;
+    for (let s = 0;s < numSectors; s++) {
+      const sx0 = xMargin + Math.floor(s / numSectors * spanW);
+      const sx1 = Math.max(sx0 + 1, xMargin + Math.floor((s + 1) / numSectors * spanW));
+      const vals = [];
+      for (let y = y0;y < y1; y++) {
+        for (let x = sx0;x < sx1; x++) {
+          vals.push(disparity[y * dw + x]);
+        }
+      }
+      vals.sort((a, b) => a - b);
+      const p88 = vals[Math.min(vals.length - 1, Math.floor(vals.length * 0.88))] ?? 0;
+      rawSectorDisp[s] = p88;
+    }
+    let nearSum = 0;
+    let nearCnt = 0;
+    for (let y = Math.floor(dh * 0.72);y < Math.floor(dh * 0.84); y++) {
+      for (let x = Math.floor(dw * 0.25);x < Math.floor(dw * 0.75); x++) {
+        const xf = x / dw;
+        if (xf > 0.38 && xf < 0.62)
+          continue;
+        nearSum += disparity[y * dw + x];
+        nearCnt++;
+      }
+    }
+    const nearGroundDisp = nearCnt > 0 ? nearSum / nearCnt : 4.5;
+    const skyVals = [];
+    for (let y = Math.floor(dh * 0.16);y < Math.floor(dh * 0.32); y += 2) {
+      for (let x = xMargin;x < dw - xMargin; x += 2) {
+        skyVals.push(disparity[y * dw + x]);
+      }
+    }
+    skyVals.sort((a, b) => a - b);
+    const farRefDisp = skyVals[Math.floor(skyVals.length * 0.15)] ?? 0.2;
+    const dispRange = Math.max(0.8, nearGroundDisp - farRefDisp);
+    const sectorClearanceLtoR = [];
+    for (let s = 0;s < numSectors; s++) {
+      const normDisp = (rawSectorDisp[s] - farRefDisp) / dispRange;
+      const clearance = Math.max(0, Math.min(1, 1 - normDisp * 1.45));
+      sectorClearanceLtoR.push(Number(clearance.toFixed(3)));
+    }
+    const maxClearance = Math.max(...sectorClearanceLtoR);
+    const centerClearance = sectorClearanceLtoR[3];
+    const floorThresh = Math.max(0.18, maxClearance - 0.16);
+    let bestRunScore = -1;
+    let bestCorridorX = 0;
+    let sIdx = 0;
+    while (sIdx < numSectors) {
+      if (sectorClearanceLtoR[sIdx] < floorThresh) {
+        sIdx++;
+        continue;
+      }
+      let runEnd = sIdx;
+      let wSum = 0;
+      let wxSum = 0;
+      let runScore = 0;
+      while (runEnd < numSectors && sectorClearanceLtoR[runEnd] >= floorThresh) {
+        const cVal = sectorClearanceLtoR[runEnd];
+        const excess = cVal - floorThresh + 0.05;
+        const normX = (runEnd + 0.5) / numSectors * 2 - 1;
+        const w = excess * excess;
+        wSum += w;
+        wxSum += w * normX;
+        runScore += cVal * cVal * (1 - 0.12 * Math.abs(normX));
+        runEnd++;
+      }
+      if (runScore > bestRunScore && wSum > 0.000001) {
+        bestRunScore = runScore;
+        bestCorridorX = wxSum / wSum;
+      }
+      sIdx = runEnd;
+    }
+    const corridorOffsetX = Number(bestCorridorX.toFixed(3));
+    const wallOrObstacleAhead = maxClearance < 0.45 || centerClearance < maxClearance - 0.12 && Math.abs(corridorOffsetX) >= 0.22;
+    return {
+      corridorOffsetX,
+      centerClearance,
+      maxClearance: Number(maxClearance.toFixed(3)),
+      wallOrObstacleAhead,
+      sectorClearanceLtoR
+    };
+  }
+  function decodeBase64ToUint8Array(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0;i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+    return bytes;
+  }
+  var WORKER_TAIL_SCRIPT = `
+let __session = null;
+self.onmessage = async (ev) => {
+  const msg = ev.data;
+  if (!msg || !msg.type) return;
+  if (msg.type === "init") {
+    try {
+      const ort = self.ort;
+      if (!ort) throw new Error("ORT global missing in depth worker");
+      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.proxy = false;
+      ort.env.wasm.wasmBinary = new Uint8Array(msg.wasmBuffer);
+      __session = await ort.InferenceSession.create(new Uint8Array(msg.modelBuffer), {
+        executionProviders: ["wasm"],
+      });
+      self.postMessage({ type: "ready" });
+    } catch (err) {
+      self.postMessage({ type: "init_error", message: String(err && err.message ? err.message : err) });
+    }
+    return;
+  }
+  if (msg.type === "infer") {
+    try {
+      if (!__session) throw new Error("Depth session not initialized");
+      const ort = self.ort;
+      const t0 = performance.now();
+      const inputName = __session.inputNames[0];
+      const outputName = __session.outputNames[0];
+      const tensor = new ort.Tensor("float32", new Float32Array(msg.chwBuffer), [1, 3, msg.height, msg.width]);
+      const outMap = await __session.run({ [inputName]: tensor });
+      const outTensor = outMap[outputName];
+      const dims = outTensor.dims;
+      const dh = dims.length === 3 ? dims[1] : dims[0];
+      const dw = dims.length === 3 ? dims[2] : dims[1];
+      const copy = new Float32Array(outTensor.data);
+      const inferMs = performance.now() - t0;
+      self.postMessage(
+        { type: "result", id: msg.id, dispBuffer: copy.buffer, dw, dh, inferMs },
+        [copy.buffer],
+      );
+    } catch (err) {
+      self.postMessage({
+        type: "infer_error",
+        id: msg.id,
+        message: String(err && err.message ? err.message : err),
+      });
+    }
+  }
+};
+`;
+
+  class BrowserDepthEngine {
+    scratchCanvas = null;
+    scratchCtx = null;
+    status = {
+      ready: false,
+      mode: "uninitialized",
+      inputSize: [DEFAULT_WIDTH, DEFAULT_HEIGHT],
+      inferencesCompleted: 0,
+      lastInferMs: 0,
+      lastResult: null
+    };
+    initPromise = null;
+    busy = false;
+    lastSubmitAt = -Infinity;
+    nextReqId = 1;
+    workerPending = new Map;
+    getGlobalStore() {
+      return typeof window !== "undefined" ? window : globalThis;
+    }
+    getDecodedAssets() {
+      const g = this.getGlobalStore();
+      const existing = g.__gameplayDepthDecoded;
+      if (existing && existing.wasmBytes?.byteLength > 0 && existing.modelBytes?.byteLength > 0) {
+        return existing;
+      }
+      const raw = g.__gameplayDepthAssets;
+      if (!raw || !raw.ortIifeJs || !raw.wasmBase64 || !raw.modelBase64) {
+        return null;
+      }
+      const inputWidth = Math.max(DEFAULT_WIDTH, raw.inputWidth ?? DEFAULT_WIDTH);
+      const inputHeight = Math.max(DEFAULT_HEIGHT, raw.inputHeight ?? DEFAULT_HEIGHT);
+      const decoded = {
+        ortIifeJs: raw.ortIifeJs,
+        wasmBytes: decodeBase64ToUint8Array(raw.wasmBase64),
+        modelBytes: decodeBase64ToUint8Array(raw.modelBase64),
+        inputWidth,
+        inputHeight
+      };
+      g.__gameplayDepthDecoded = decoded;
+      raw.wasmBase64 = "";
+      raw.modelBase64 = "";
+      delete g.__gameplayDepthAssets;
+      return decoded;
+    }
+    ensureScratchCanvas(w, h) {
+      if (typeof document === "undefined")
+        return null;
+      if (!this.scratchCanvas) {
+        this.scratchCanvas = document.createElement("canvas");
+      }
+      if (this.scratchCanvas.width !== w)
+        this.scratchCanvas.width = w;
+      if (this.scratchCanvas.height !== h)
+        this.scratchCanvas.height = h;
+      if (!this.scratchCtx) {
+        this.scratchCtx = this.scratchCanvas.getContext("2d", {
+          willReadFrequently: true
+        });
+      }
+      return this.scratchCtx;
+    }
+    extractChw(surface) {
+      const [w, h] = this.status.inputSize;
+      const ctx = this.ensureScratchCanvas(w, h);
+      if (!ctx)
+        return null;
+      ctx.drawImage(surface, 0, 0, w, h);
+      const img = ctx.getImageData(0, 0, w, h);
+      const chw = rgbaToNormalizedChwTensor(img.data, w, h);
+      return { chw, width: w, height: h };
+    }
+    attachWorkerListener(worker) {
+      worker.onmessage = (ev) => {
+        const msg = ev.data;
+        if (!msg || typeof msg !== "object")
+          return;
+        if (msg.type === "result") {
+          const disp = new Float32Array(msg.dispBuffer);
+          const parsed = analyzeDisparityMap(disp, msg.dw, msg.dh);
+          const res = {
+            ...parsed,
+            inferMs: Number(msg.inferMs ?? 0),
+            timestamp: performance.now()
+          };
+          this.busy = false;
+          this.status.inferencesCompleted++;
+          this.status.lastInferMs = res.inferMs;
+          this.status.lastResult = res;
+          const pending = this.workerPending.get(msg.id);
+          if (pending) {
+            this.workerPending.delete(msg.id);
+            pending.resolve(res);
+          }
+        } else if (msg.type === "infer_error") {
+          this.busy = false;
+          this.status.error = String(msg.message ?? "Worker inference error");
+          const pending = this.workerPending.get(msg.id);
+          if (pending) {
+            this.workerPending.delete(msg.id);
+            pending.resolve(null);
+          }
+        }
+      };
+      worker.onerror = (err) => {
+        this.busy = false;
+        this.status.error = err.message || "Depth worker error";
+        for (const [, p] of this.workerPending) {
+          p.resolve(null);
+        }
+        this.workerPending.clear();
+      };
+    }
+    getSingleton() {
+      const s = this.getGlobalStore().__gameplayDepthSingleton;
+      return s ?? null;
+    }
+    setSingleton(state) {
+      this.getGlobalStore().__gameplayDepthSingleton = state;
+    }
+    async init() {
+      if (this.status.ready)
+        return this.getStatus();
+      if (this.initPromise)
+        return this.initPromise;
+      const existingSingleton = this.getSingleton();
+      if (existingSingleton && existingSingleton.ready) {
+        this.status.mode = existingSingleton.mode;
+        this.status.ready = true;
+        this.status.inputSize = [
+          existingSingleton.inputWidth,
+          existingSingleton.inputHeight
+        ];
+        if (existingSingleton.worker) {
+          this.attachWorkerListener(existingSingleton.worker);
+        }
+        return this.getStatus();
+      }
+      const decoded = this.getDecodedAssets();
+      if (!decoded) {
+        this.status.mode = "unavailable";
+        this.status.ready = false;
+        this.status.error = "No __gameplayDepthAssets bundle found; call evaluate_script with .cache/gameplay-depth-bundle.js first";
+        return this.getStatus();
+      }
+      this.status.mode = "initializing";
+      this.status.inputSize = [decoded.inputWidth, decoded.inputHeight];
+      this.status.error = undefined;
+      this.initPromise = (async () => {
+        let workerError = "";
+        if (typeof Worker !== "undefined" && typeof Blob !== "undefined") {
+          try {
+            const blob = new Blob([decoded.ortIifeJs, `
+`, WORKER_TAIL_SCRIPT], {
+              type: "application/javascript"
+            });
+            const blobUrl = URL.createObjectURL(blob);
+            const worker = new Worker(blobUrl);
+            await new Promise((resolve, reject) => {
+              const timeoutId = setTimeout(() => {
+                reject(new Error("Depth worker init timeout (8000ms)"));
+              }, 8000);
+              worker.onmessage = (ev) => {
+                const m = ev.data;
+                if (m?.type === "ready") {
+                  clearTimeout(timeoutId);
+                  resolve();
+                } else if (m?.type === "init_error") {
+                  clearTimeout(timeoutId);
+                  reject(new Error(m.message || "Worker ORT init error"));
+                }
+              };
+              worker.onerror = (err) => {
+                clearTimeout(timeoutId);
+                reject(new Error(err?.message || "Worker blocked or crashed on boot"));
+              };
+              const wasmCopy = decoded.wasmBytes.slice(0).buffer;
+              const modelCopy = decoded.modelBytes.slice(0).buffer;
+              worker.postMessage({
+                type: "init",
+                wasmBuffer: wasmCopy,
+                modelBuffer: modelCopy
+              }, [wasmCopy, modelCopy]);
+            });
+            URL.revokeObjectURL(blobUrl);
+            this.attachWorkerListener(worker);
+            this.status.mode = "worker";
+            this.status.ready = true;
+            this.status.error = undefined;
+            this.setSingleton({
+              worker,
+              mainSession: null,
+              ortRef: null,
+              mode: "worker",
+              ready: true,
+              inputWidth: decoded.inputWidth,
+              inputHeight: decoded.inputHeight
+            });
+            return this.getStatus();
+          } catch (err) {
+            workerError = err instanceof Error ? err.message : String(err);
+          }
+        } else {
+          workerError = "Worker/Blob API unavailable";
+        }
+        try {
+          const g = this.getGlobalStore();
+          if (!g.ort) {
+            new Function(decoded.ortIifeJs)();
+          }
+          const ort = g.ort;
+          if (!ort) {
+            throw new Error("Failed to evaluate ORT runtime on main thread");
+          }
+          ort.env.wasm.numThreads = 1;
+          ort.env.wasm.proxy = false;
+          ort.env.wasm.wasmBinary = decoded.wasmBytes.slice(0);
+          const session = await ort.InferenceSession.create(decoded.modelBytes.slice(0), { executionProviders: ["wasm"] });
+          this.status.mode = "main_thread";
+          this.status.ready = true;
+          this.status.error = workerError ? `worker_fallback: ${workerError}` : undefined;
+          this.setSingleton({
+            worker: null,
+            mainSession: session,
+            ortRef: ort,
+            mode: "main_thread",
+            ready: true,
+            inputWidth: decoded.inputWidth,
+            inputHeight: decoded.inputHeight,
+            error: this.status.error
+          });
+          return this.getStatus();
+        } catch (fallbackErr) {
+          const fbMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+          this.status.mode = "error";
+          this.status.ready = false;
+          this.status.error = `worker=(${workerError}) main_thread=(${fbMsg})`;
+          return this.getStatus();
+        } finally {
+          this.initPromise = null;
+        }
+      })();
+      return this.initPromise;
+    }
+    getStatus() {
+      return {
+        ...this.status,
+        inputSize: [...this.status.inputSize],
+        lastResult: this.status.lastResult ? {
+          ...this.status.lastResult,
+          sectorClearanceLtoR: [
+            ...this.status.lastResult.sectorClearanceLtoR
+          ]
+        } : null
+      };
+    }
+    submitFrameNonBlocking(surface) {
+      const singleton = this.getSingleton();
+      if (this.status.ready && this.status.mode === "worker" && singleton?.worker && !this.busy) {
+        const now = performance.now();
+        if (now - this.lastSubmitAt >= 120) {
+          const extracted = this.extractChw(surface);
+          if (extracted) {
+            this.busy = true;
+            this.lastSubmitAt = now;
+            const reqId = this.nextReqId++;
+            singleton.worker.postMessage({
+              type: "infer",
+              id: reqId,
+              chwBuffer: extracted.chw.buffer,
+              width: extracted.width,
+              height: extracted.height
+            }, [extracted.chw.buffer]);
+          }
+        }
+      }
+      return this.status.lastResult;
+    }
+    async inferOnce(surface) {
+      if (!this.status.ready) {
+        await this.init();
+      }
+      const singleton = this.getSingleton();
+      if (!this.status.ready || !singleton)
+        return null;
+      const extracted = this.extractChw(surface);
+      if (!extracted)
+        return null;
+      if (this.status.mode === "worker" && singleton.worker) {
+        if (this.busy) {
+          return this.status.lastResult;
+        }
+        this.busy = true;
+        this.lastSubmitAt = performance.now();
+        const reqId = this.nextReqId++;
+        return await new Promise((resolve) => {
+          const timeoutId = setTimeout(() => {
+            this.workerPending.delete(reqId);
+            this.busy = false;
+            resolve(this.status.lastResult);
+          }, 4000);
+          this.workerPending.set(reqId, {
+            resolve: (res) => {
+              clearTimeout(timeoutId);
+              resolve(res);
+            }
+          });
+          singleton.worker.postMessage({
+            type: "infer",
+            id: reqId,
+            chwBuffer: extracted.chw.buffer,
+            width: extracted.width,
+            height: extracted.height
+          }, [extracted.chw.buffer]);
+        });
+      }
+      if (this.status.mode === "main_thread" && singleton.mainSession && singleton.ortRef) {
+        if (this.busy)
+          return this.status.lastResult;
+        this.busy = true;
+        try {
+          const t0 = performance.now();
+          const sess = singleton.mainSession;
+          const ort = singleton.ortRef;
+          const tensor = new ort.Tensor("float32", extracted.chw, [
+            1,
+            3,
+            extracted.height,
+            extracted.width
+          ]);
+          const outMap = await sess.run({ [sess.inputNames[0]]: tensor });
+          const outTensor = outMap[sess.outputNames[0]];
+          const dims = outTensor.dims;
+          const dh = dims.length === 3 ? dims[1] : dims[0];
+          const dw = dims.length === 3 ? dims[2] : dims[1];
+          const parsed = analyzeDisparityMap(outTensor.data, dw, dh);
+          const inferMs = performance.now() - t0;
+          const res = {
+            ...parsed,
+            inferMs,
+            timestamp: performance.now()
+          };
+          this.status.inferencesCompleted++;
+          this.status.lastInferMs = inferMs;
+          this.status.lastResult = res;
+          return res;
+        } catch (err) {
+          this.status.error = err instanceof Error ? err.message : String(err);
+          return this.status.lastResult;
+        } finally {
+          this.busy = false;
+        }
+      }
+      return this.status.lastResult;
+    }
+  }
+
   // packages/runtime/src/vision.ts
   var DEFAULT_STK_CROPS = [
-    { label: "MINIMAP", x: 0, y: 0.58, w: 0.23, h: 0.41 },
+    { label: "MINIMAP", x: 0, y: 0.58, w: 0.28, h: 0.41 },
     { label: "TUTORIAL PROMPT", x: 0.12, y: 0.84, w: 0.76, h: 0.16 },
     { label: "LOOKAHEAD & ALERT", x: 0.22, y: 0.22, w: 0.56, h: 0.38 }
   ];
@@ -191,6 +714,33 @@
       const lumFactor = Math.min(1, (lum - 145) / 25);
       const yellowFactor = Math.min(1, (yellowExcess - 28) / 22);
       return 0.95 * Math.max(0.55, lumFactor * yellowFactor);
+    }
+    return 0;
+  }
+  function isSaturatedBlueCurb(r, g, b) {
+    return b > 150 && b - r > 42 && (b - g > 12 || g > 115);
+  }
+  function isSaturatedRedCurb(r, g, b) {
+    return r > 175 && r - g > 60 && r - b > 45;
+  }
+  function computeCurbStripePenalty(r, g, b, neighborR, neighborG, neighborB, evalModel) {
+    const roadBlueExcess = evalModel.b - evalModel.r;
+    const roadRedExcess = evalModel.r - evalModel.g;
+    const refLum = (evalModel.r + evalModel.g + evalModel.b) / 3;
+    if (roadBlueExcess < 28 && isSaturatedBlueCurb(r, g, b)) {
+      return 0.72;
+    }
+    if (roadRedExcess < 45 && isSaturatedRedCurb(r, g, b)) {
+      return 0.72;
+    }
+    if (refLum < 185) {
+      const lum = (r + g + b) / 3;
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+      const neighborLum = (neighborR + neighborG + neighborB) / 3;
+      const neighborIsCurb = roadBlueExcess < 28 && isSaturatedBlueCurb(neighborR, neighborG, neighborB) || roadRedExcess < 45 && isSaturatedRedCurb(neighborR, neighborG, neighborB);
+      if (lum > 208 && chroma < 28 && neighborIsCurb && Math.abs(lum - neighborLum) > 50) {
+        return 0.55;
+      }
     }
     return 0;
   }
@@ -347,27 +897,41 @@
     const meanSkyB = skySampleCnt > 0 ? skySampleB / skySampleCnt : 240;
     const wheelPixels = [];
     let seedTotal = 0;
-    const collectPatch = (x0Frac, x1Frac, y0Frac, y1Frac) => {
+    const isPixelCurbPaint = (px, py) => {
+      const cx = Math.max(0, Math.min(width - 1, px));
+      const cy = Math.max(0, Math.min(height - 1, py));
+      const i = (cy * width + cx) * 4;
+      return isSaturatedBlueCurb(rgba[i], rgba[i + 1], rgba[i + 2]) || isSaturatedRedCurb(rgba[i], rgba[i + 1], rgba[i + 2]);
+    };
+    const collectPatch = (x0Frac, x1Frac, y0Frac, y1Frac, weight = 1) => {
       const xs = Math.floor(width * x0Frac);
       const xe = Math.floor(width * x1Frac);
       const ys = Math.floor(height * y0Frac);
       const ye = Math.floor(height * y1Frac);
       for (let y = ys;y < ye; y += 2) {
         for (let x = xs;x < xe; x += 2) {
-          seedTotal++;
+          seedTotal += weight;
           const idx = (y * width + x) * 4;
-          wheelPixels.push([rgba[idx], rgba[idx + 1], rgba[idx + 2]]);
+          const r = rgba[idx];
+          const g = rgba[idx + 1];
+          const b = rgba[idx + 2];
+          const rx = (y * width + Math.min(width - 1, x + 2)) * 4;
+          const dy = (Math.min(height - 1, y + 2) * width + x) * 4;
+          const edgeX = (Math.abs(r - rgba[rx]) + Math.abs(g - rgba[rx + 1]) + Math.abs(b - rgba[rx + 2])) / (3 * 255);
+          const edgeY = (Math.abs(r - rgba[dy]) + Math.abs(g - rgba[dy + 1]) + Math.abs(b - rgba[dy + 2])) / (3 * 255);
+          const nearCurb = isPixelCurbPaint(x - 3, y) || isPixelCurbPaint(x + 3, y) || isPixelCurbPaint(x, y - 3) || isPixelCurbPaint(x, y + 3);
+          wheelPixels.push([r, g, b, weight, Math.max(edgeX, edgeY), nearCurb]);
         }
       }
     };
-    collectPatch(0.28, 0.39, 0.64, 0.75);
-    collectPatch(0.61, 0.72, 0.64, 0.75);
-    collectPatch(0.44, 0.56, 0.47, 0.52);
+    collectPatch(0.28, 0.39, 0.64, 0.75, 1);
+    collectPatch(0.61, 0.72, 0.64, 0.75, 1);
+    collectPatch(0.38, 0.62, 0.44, 0.51, 2);
     let seedR = 0;
     let seedG = 0;
     let seedB = 0;
     let seedValid = 0;
-    for (const [r, g, b] of wheelPixels) {
+    for (const [r, g, b, weight, localEdge, nearCurb] of wheelPixels) {
       const lum = (r + g + b) / 3;
       if (lum < 22 || lum > 242)
         continue;
@@ -383,6 +947,9 @@
           continue;
         if (computeSandPenalty(r, g, b, modelLum) > 0.15)
           continue;
+        if (roadModel.b - roadModel.r < 28 && isSaturatedBlueCurb(r, g, b) || roadModel.r - roadModel.g < 45 && isSaturatedRedCurb(r, g, b) || modelLum < 185 && nearCurb && lum > 205 && Math.max(r, g, b) - Math.min(r, g, b) < 28) {
+          continue;
+        }
         if (roadModel.shoulderInitialized && rgbColorDistance(r, g, b, roadModel.shoulderR ?? 0, roadModel.shoulderG ?? 0, roadModel.shoulderB ?? 0) < 0.1) {
           continue;
         }
@@ -392,11 +959,15 @@
           continue;
         if (computeSandPenalty(r, g, b, 120) > 0.15)
           continue;
+        if (isSaturatedBlueCurb(r, g, b) || isSaturatedRedCurb(r, g, b))
+          continue;
+        if (lum > 198 && (localEdge > 0.22 || nearCurb))
+          continue;
       }
-      seedR += r;
-      seedG += g;
-      seedB += b;
-      seedValid++;
+      seedR += r * weight;
+      seedG += g * weight;
+      seedB += b * weight;
+      seedValid += weight;
     }
     let evalModel = { ...roadModel };
     if (!evalModel.initialized && seedValid >= 8) {
@@ -416,6 +987,7 @@
     const nearRows = [Math.floor(height * 0.53), Math.floor(height * 0.59)];
     const allLookRows = [...farRows, ...nearRows];
     const upperWallRows = [Math.floor(height * 0.2), Math.floor(height * 0.28)];
+    const midHorizonRow = Math.floor(height * 0.35);
     const refLum = (evalModel.r + evalModel.g + evalModel.b) / 3;
     const refGreen = evalModel.g - Math.max(evalModel.r, evalModel.b);
     const xMargin = Math.floor(width * 0.08);
@@ -431,6 +1003,8 @@
       let farCnt = 0;
       let nearSum = 0;
       let nearCnt = 0;
+      let curbHitCnt = 0;
+      let colSampleCnt = 0;
       let midR = 0;
       let midG = 0;
       let midB = 0;
@@ -459,6 +1033,33 @@
           const colorDist = rgbColorDistance(r, g, b, evalModel.r, evalModel.g, evalModel.b);
           const rightIdx = (y * width + Math.min(width - 1, x + 1)) * 4;
           const edge = (Math.abs(r - rgba[rightIdx]) + Math.abs(g - rgba[rightIdx + 1]) + Math.abs(b - rgba[rightIdx + 2])) / (3 * 255);
+          let nR = rgba[rightIdx];
+          let nG = rgba[rightIdx + 1];
+          let nB = rgba[rightIdx + 2];
+          const probeOffsets = [
+            [-3, 0],
+            [3, 0],
+            [0, -2],
+            [0, 2]
+          ];
+          for (const [dx, dy] of probeOffsets) {
+            const px = Math.max(0, Math.min(width - 1, x + dx));
+            const py = Math.max(0, Math.min(height - 1, y + dy));
+            const pIdx = (py * width + px) * 4;
+            const pr = rgba[pIdx];
+            const pg = rgba[pIdx + 1];
+            const pb = rgba[pIdx + 2];
+            if (isSaturatedBlueCurb(pr, pg, pb) || isSaturatedRedCurb(pr, pg, pb)) {
+              nR = pr;
+              nG = pg;
+              nB = pb;
+              break;
+            }
+          }
+          const curbPenalty = computeCurbStripePenalty(r, g, b, nR, nG, nB, evalModel);
+          if (curbPenalty > 0)
+            curbHitCnt++;
+          colSampleCnt++;
           const greenPenalty = refGreen >= 8 ? 0 : Math.max(0, (g - Math.max(r, b) - 12) / 55);
           const skyPenalty = b - r > 22 && lum > 125 && refLum < 185 ? 0.85 : 0;
           const redWallPenalty = r - g > 68 && evalModel.r - evalModel.g < 45 ? 0.55 : 0;
@@ -471,7 +1072,7 @@
               shoulderPenalty = 0.65 * (1 - distToShoulder / 0.14);
             }
           }
-          const pixelScore = Math.max(0, 1 - (colorDist * 2.15 + edge * 0.85 + greenPenalty + skyPenalty + redWallPenalty + sandPenalty + glareWallPenalty + shoulderPenalty));
+          const pixelScore = Math.max(0, 1 - (colorDist * 2.15 + edge * 0.85 + curbPenalty + greenPenalty + skyPenalty + redWallPenalty + sandPenalty + glareWallPenalty + shoulderPenalty));
           if (isFar) {
             farSum += pixelScore;
             farCnt++;
@@ -496,27 +1097,45 @@
             upCount++;
           }
         }
-        if (upCount > 0) {
+        let mhR = 0;
+        let mhG = 0;
+        let mhB = 0;
+        let mhCount = 0;
+        for (let x = x0;x < x1; x++) {
+          const idx = (midHorizonRow * width + x) * 4;
+          mhR += rgba[idx];
+          mhG += rgba[idx + 1];
+          mhB += rgba[idx + 2];
+          mhCount++;
+        }
+        if (upCount > 0 && mhCount > 0) {
           upR /= upCount;
           upG /= upCount;
           upB /= upCount;
+          mhR /= mhCount;
+          mhG /= mhCount;
+          mhB /= mhCount;
           const mR = midR / midCount;
           const mG = midG / midCount;
           const mB = midB / midCount;
           const upLum = (upR + upG + upB) / 3;
-          const upIsSky = upB - upR > 18 && upLum > 105;
+          const verticalRgbDiff = (Math.abs(upR - mR) + Math.abs(upG - mG) + Math.abs(upB - mB)) / 3;
+          const midHorizonDiff = (Math.abs(mhR - mR) + Math.abs(mhG - mG) + Math.abs(mhB - mB)) / 3;
+          const chromaShift = Math.abs(upB - upR - (mB - mR));
+          const upIsOpenSky = upB - upR > 18 && upLum > 105 && (verticalRgbDiff > 28 || chromaShift > 18);
           const upIsFoliage = upG - Math.max(upR, upB) > 12;
-          const upIsDarkCeiling = upLum < 76;
-          if (!upIsSky && !upIsFoliage && !upIsDarkCeiling) {
-            const verticalRgbDiff = (Math.abs(upR - mR) + Math.abs(upG - mG) + Math.abs(upB - mB)) / 3;
-            if (verticalRgbDiff < 26) {
-              wallPenalty = 0.82 * Math.min(1, (26 - verticalRgbDiff) / 14);
+          const upIsPitchDark = upLum < 48;
+          if (!upIsOpenSky && !upIsFoliage && !upIsPitchDark) {
+            if (verticalRgbDiff < 26 && midHorizonDiff < 24) {
+              wallPenalty = 0.85 * Math.min(1, (26 - verticalRgbDiff) / 14);
             }
           }
         }
       }
-      const fScore = farCnt > 0 ? Math.max(0, farSum / farCnt - wallPenalty) : 0;
-      const nScore = nearCnt > 0 ? Math.max(0, nearSum / nearCnt - wallPenalty) : 0;
+      const curbMarginPenalty = colSampleCnt > 0 ? 0.32 * Math.min(1, curbHitCnt / colSampleCnt * 2) : 0;
+      const totalColPenalty = wallPenalty + curbMarginPenalty;
+      const fScore = farCnt > 0 ? Math.max(0, farSum / farCnt - totalColPenalty) : 0;
+      const nScore = nearCnt > 0 ? Math.max(0, nearSum / nearCnt - totalColPenalty) : 0;
       rawFarScores[c] = fScore;
       rawNearScores[c] = nScore;
       rawCombinedScores[c] = 0.46 * fScore + 0.54 * nScore;
@@ -596,13 +1215,476 @@
     };
   }
 
+  class MinimapTracker {
+    prevCandidates = [];
+    prevPos = null;
+    history = [];
+    hx = 0;
+    hy = -1;
+    headingValid = false;
+    speed = 0;
+    distance = 0;
+    lastTurnAhead = 0;
+    reset() {
+      this.prevCandidates = [];
+      this.prevPos = null;
+      this.history = [];
+      this.hx = 0;
+      this.hy = -1;
+      this.headingValid = false;
+      this.speed = 0;
+      this.distance = 0;
+      this.lastTurnAhead = 0;
+    }
+    getSummary() {
+      return {
+        visible: this.prevPos !== null,
+        onRibbon: this.prevPos !== null,
+        ribbonPixels: 0,
+        playerPos: this.prevPos ? [...this.prevPos] : null,
+        headingDeg: this.headingValid ? Number((Math.atan2(this.hy, this.hx) * 180 / Math.PI).toFixed(1)) : null,
+        headingValid: this.headingValid,
+        turnAhead: this.lastTurnAhead,
+        speed: this.speed,
+        distance: this.distance
+      };
+    }
+    step(rgba, mmW, mmH) {
+      const scale = mmW / 64;
+      const total = mmW * mmH;
+      const ribbonMask = new Uint8Array(total);
+      let ribbonPixels = 0;
+      for (let y = 2;y < mmH - 2; y++) {
+        for (let x = 2;x < mmW - 2; x++) {
+          const idx = (y * mmW + x) * 4;
+          const r = rgba[idx];
+          const g = rgba[idx + 1];
+          const b = rgba[idx + 2];
+          const lum = (r + g + b) / 3;
+          const maxC = Math.max(r, g, b);
+          const minC = Math.min(r, g, b);
+          if (lum > 145 && maxC - minC < 52) {
+            ribbonMask[y * mmW + x] = 1;
+            ribbonPixels++;
+          }
+        }
+      }
+      const visible = ribbonPixels >= Math.max(10, Math.round(16 * scale * scale));
+      if (!visible) {
+        return {
+          visible: false,
+          onRibbon: false,
+          ribbonPixels,
+          playerPos: null,
+          headingDeg: this.headingValid ? Number((Math.atan2(this.hy, this.hx) * 180 / Math.PI).toFixed(1)) : null,
+          headingValid: this.headingValid,
+          turnAhead: 0,
+          speed: 0,
+          distance: Number(this.distance.toFixed(2))
+        };
+      }
+      const redMask = new Uint8Array(total);
+      for (let y = 2;y < mmH - 2; y++) {
+        for (let x = 2;x < mmW - 2; x++) {
+          const idx = (y * mmW + x) * 4;
+          const r = rgba[idx];
+          const g = rgba[idx + 1];
+          const b = rgba[idx + 2];
+          if (r > 165 && r - g > 45 && r - b > 25) {
+            redMask[y * mmW + x] = 1;
+          }
+        }
+      }
+      const visited = new Uint8Array(total);
+      const maxArea = Math.max(80, Math.floor(total * 0.06));
+      const candidates = [];
+      const tinyCandidates = [];
+      const queue = new Int32Array(total);
+      for (let y = 2;y < mmH - 2; y++) {
+        for (let x = 2;x < mmW - 2; x++) {
+          const start = y * mmW + x;
+          if (!redMask[start] || visited[start])
+            continue;
+          let head = 0;
+          let tail = 0;
+          queue[tail++] = start;
+          visited[start] = 1;
+          let sumX = 0;
+          let sumY = 0;
+          let area = 0;
+          while (head < tail) {
+            const cur = queue[head++];
+            const cx = cur % mmW;
+            const cy = Math.floor(cur / mmW);
+            sumX += cx;
+            sumY += cy;
+            area++;
+            const neighbors = [cur - 1, cur + 1, cur - mmW, cur + mmW];
+            for (const nb of neighbors) {
+              if (nb < 0 || nb >= total)
+                continue;
+              if (!redMask[nb] || visited[nb])
+                continue;
+              visited[nb] = 1;
+              queue[tail++] = nb;
+            }
+          }
+          if (area <= maxArea) {
+            const cx = sumX / area;
+            const cy = sumY / area;
+            let rHits = 0;
+            const rad = Math.max(3, Math.round(5 * scale));
+            for (let ry = -rad;ry <= rad; ry++) {
+              for (let rx = -rad;rx <= rad; rx++) {
+                const px = Math.round(cx + rx);
+                const py = Math.round(cy + ry);
+                if (px >= 0 && px < mmW && py >= 0 && py < mmH) {
+                  if (ribbonMask[py * mmW + px])
+                    rHits++;
+                }
+              }
+            }
+            const cand = { x: cx, y: cy, area, ribbonScore: rHits };
+            if (area >= 2)
+              candidates.push(cand);
+            else
+              tinyCandidates.push(cand);
+          }
+        }
+      }
+      const pool = candidates.length > 0 ? candidates : tinyCandidates;
+      pool.sort((a, b) => b.ribbonScore - a.ribbonScore || b.area - a.area);
+      const topPool = pool.slice(0, 4);
+      if (topPool.length === 0) {
+        return {
+          visible: true,
+          onRibbon: false,
+          ribbonPixels,
+          playerPos: null,
+          headingDeg: this.headingValid ? Number((Math.atan2(this.hy, this.hx) * 180 / Math.PI).toFixed(1)) : null,
+          headingValid: this.headingValid,
+          turnAhead: 0,
+          speed: 0,
+          distance: Number(this.distance.toFixed(2))
+        };
+      }
+      const maxStep = mmW * 0.28;
+      const minMoveThresh = 0.35 * scale;
+      let chosen = topPool[0];
+      let switchedFromStatic = false;
+      let switchAnchor = null;
+      if (this.prevCandidates.length > 0) {
+        let bestScore = -Infinity;
+        for (const c of topPool) {
+          let minOldDist = Infinity;
+          let closestOld = null;
+          for (const old of this.prevCandidates) {
+            const d = Math.hypot(c.x - old.x, c.y - old.y);
+            if (d < minOldDist) {
+              minOldDist = d;
+              closestOld = old;
+            }
+          }
+          const dPrev = this.prevPos ? Math.hypot(c.x - this.prevPos[0], c.y - this.prevPos[1]) : Infinity;
+          const isMovingMatch = minOldDist >= minMoveThresh && minOldDist <= maxStep;
+          const isStationary = minOldDist < 0.22 * scale;
+          let score = Math.min(20, c.ribbonScore) * 0.25 + Math.min(12, c.area) * 0.15;
+          if (isMovingMatch)
+            score += 25;
+          else if (isStationary)
+            score -= 8;
+          if (dPrev <= mmW * 0.22)
+            score += 8 - dPrev * 0.2;
+          if (score > bestScore) {
+            bestScore = score;
+            chosen = c;
+            if (isMovingMatch && this.prevPos && dPrev > mmW * 0.22 && closestOld) {
+              switchedFromStatic = true;
+              switchAnchor = [closestOld.x, closestOld.y];
+            }
+          }
+        }
+      }
+      this.prevCandidates = topPool;
+      const chosenPos = [chosen.x, chosen.y];
+      if (switchedFromStatic && switchAnchor) {
+        this.history = [switchAnchor, chosenPos];
+        this.headingValid = false;
+        this.prevPos = switchAnchor;
+      }
+      if (this.prevPos) {
+        const stepDist = Math.hypot(chosenPos[0] - this.prevPos[0], chosenPos[1] - this.prevPos[1]);
+        if (stepDist > maxStep) {
+          this.history = [chosenPos];
+          this.headingValid = false;
+          this.speed = 0;
+        } else {
+          this.distance += stepDist;
+          this.speed = Number(stepDist.toFixed(3));
+          this.history.push(chosenPos);
+          if (this.history.length > 10)
+            this.history.shift();
+          const minAnchorDist = 1.4 * scale;
+          let anchor = null;
+          for (let i = 0;i < this.history.length - 1; i++) {
+            const hPt = this.history[i];
+            const d = Math.hypot(chosenPos[0] - hPt[0], chosenPos[1] - hPt[1]);
+            if (d >= minAnchorDist) {
+              anchor = hPt;
+              break;
+            }
+          }
+          if (anchor) {
+            const dx = chosenPos[0] - anchor[0];
+            const dy = chosenPos[1] - anchor[1];
+            const len = Math.hypot(dx, dy);
+            if (len > 0.0001) {
+              const ux = dx / len;
+              const uy = dy / len;
+              if (!this.headingValid) {
+                this.hx = ux;
+                this.hy = uy;
+                this.headingValid = true;
+              } else {
+                const alpha = 0.48;
+                const bx = this.hx * (1 - alpha) + ux * alpha;
+                const by = this.hy * (1 - alpha) + uy * alpha;
+                const bLen = Math.hypot(bx, by);
+                if (bLen > 0.0001) {
+                  this.hx = bx / bLen;
+                  this.hy = by / bLen;
+                }
+              }
+            }
+          }
+        }
+      } else {
+        this.history = [chosenPos];
+        this.speed = 0;
+      }
+      this.prevPos = chosenPos;
+      let nearbyRibbon = 0;
+      for (let dy = -2;dy <= 2; dy++) {
+        for (let dx = -2;dx <= 2; dx++) {
+          const px = Math.round(chosenPos[0] + dx);
+          const py = Math.round(chosenPos[1] + dy);
+          if (px >= 0 && px < mmW && py >= 0 && py < mmH) {
+            if (ribbonMask[py * mmW + px])
+              nearbyRibbon++;
+          }
+        }
+      }
+      const onRibbon = nearbyRibbon >= 2;
+      let turnAhead = 0;
+      if (this.headingValid) {
+        const rx = -this.hy;
+        const ry = this.hx;
+        const anglesDeg = [];
+        for (let a = -80;a <= 80; a += 10)
+          anglesDeg.push(a);
+        const rawRay = new Float64Array(anglesDeg.length);
+        const radii = [4.5 * scale, 7.5 * scale, 10.5 * scale];
+        for (let i = 0;i < anglesDeg.length; i++) {
+          const rad = anglesDeg[i] * Math.PI / 180;
+          const dirX = Math.cos(rad) * this.hx + Math.sin(rad) * rx;
+          const dirY = Math.cos(rad) * this.hy + Math.sin(rad) * ry;
+          let hitScore = 0;
+          for (const r of radii) {
+            const sx = chosenPos[0] + dirX * r;
+            const sy = chosenPos[1] + dirY * r;
+            let matched = false;
+            for (let oy = -1;oy <= 1 && !matched; oy++) {
+              for (let ox = -1;ox <= 1 && !matched; ox++) {
+                const px = Math.round(sx + ox);
+                const py = Math.round(sy + oy);
+                if (px >= 0 && px < mmW && py >= 0 && py < mmH) {
+                  if (ribbonMask[py * mmW + px])
+                    matched = true;
+                }
+              }
+            }
+            if (matched)
+              hitScore += 1 / radii.length;
+          }
+          rawRay[i] = hitScore;
+        }
+        const smoothRay = new Float64Array(anglesDeg.length);
+        for (let i = 0;i < anglesDeg.length; i++) {
+          const l = i > 0 ? rawRay[i - 1] : rawRay[i];
+          const r = i < anglesDeg.length - 1 ? rawRay[i + 1] : rawRay[i];
+          smoothRay[i] = 0.25 * l + 0.5 * rawRay[i] + 0.25 * r;
+        }
+        const thresh = 0.3;
+        let bestScore = -1;
+        let bestAngle = 0;
+        let k = 0;
+        while (k < anglesDeg.length) {
+          if (smoothRay[k] <= thresh) {
+            k++;
+            continue;
+          }
+          let end = k;
+          let wSum = 0;
+          let waSum = 0;
+          let runScore = 0;
+          while (end < anglesDeg.length && smoothRay[end] > thresh) {
+            const ex = smoothRay[end] - thresh + 0.05;
+            const w = ex * ex;
+            wSum += w;
+            waSum += w * anglesDeg[end];
+            runScore += smoothRay[end] * smoothRay[end] * (1 - 0.08 * (Math.abs(anglesDeg[end]) / 80));
+            end++;
+          }
+          if (runScore > bestScore && wSum > 0.000001) {
+            bestScore = runScore;
+            bestAngle = waSum / wSum;
+          }
+          k = end;
+        }
+        if (bestScore > 0) {
+          turnAhead = Number(Math.max(-1, Math.min(1, bestAngle / 65)).toFixed(3));
+        }
+      }
+      this.lastTurnAhead = turnAhead;
+      return {
+        visible: true,
+        onRibbon,
+        ribbonPixels,
+        playerPos: [Number(chosenPos[0].toFixed(2)), Number(chosenPos[1].toFixed(2))],
+        headingDeg: this.headingValid ? Number((Math.atan2(this.hy, this.hx) * 180 / Math.PI).toFixed(1)) : null,
+        headingValid: this.headingValid,
+        turnAhead,
+        speed: this.speed,
+        distance: Number(this.distance.toFixed(2))
+      };
+    }
+  }
+  function analyzeMinimapRgba(rgba, mmW, mmH, tracker) {
+    return tracker.step(rgba, mmW, mmH);
+  }
+  function detectRaceFinished(rgba, width, height, minimapVisible) {
+    if (minimapVisible || width < 40 || height < 30)
+      return false;
+    let speedoBright = 0;
+    let speedoTotal = 0;
+    const spX0 = Math.floor(width * 0.82);
+    const spX1 = Math.floor(width * 0.97);
+    const spY0 = Math.floor(height * 0.74);
+    const spY1 = Math.floor(height * 0.96);
+    for (let y = spY0;y < spY1; y++) {
+      for (let x = spX0;x < spX1; x++) {
+        const idx = (y * width + x) * 4;
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        const lum = (r + g + b) / 3;
+        if (lum > 215 || b > 175 && g > 135 && b - r > 55) {
+          speedoBright++;
+        }
+        speedoTotal++;
+      }
+    }
+    if (speedoTotal > 0 && speedoBright / speedoTotal > 0.06) {
+      return false;
+    }
+    const inX0 = Math.floor(width * 0.22);
+    const inX1 = Math.floor(width * 0.78);
+    const inY0 = Math.floor(height * 0.2);
+    const inY1 = Math.floor(height * 0.78);
+    const rs = [];
+    const gs = [];
+    const bs = [];
+    let textEdges = 0;
+    let edgeSamples = 0;
+    for (let y = inY0;y < inY1; y += 2) {
+      for (let x = inX0;x < inX1; x += 2) {
+        const idx = (y * width + x) * 4;
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        rs.push(r);
+        gs.push(g);
+        bs.push(b);
+        if (x + 1 < inX1 && y + 1 < inY1) {
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          const rIdx = (y * width + (x + 1)) * 4;
+          const dIdx = ((y + 1) * width + x) * 4;
+          const rLum = 0.299 * rgba[rIdx] + 0.587 * rgba[rIdx + 1] + 0.114 * rgba[rIdx + 2];
+          const dLum = 0.299 * rgba[dIdx] + 0.587 * rgba[dIdx + 1] + 0.114 * rgba[dIdx + 2];
+          if (Math.abs(lum - rLum) > 42 || Math.abs(lum - dLum) > 42) {
+            textEdges++;
+          }
+          edgeSamples++;
+        }
+      }
+    }
+    if (rs.length < 20 || edgeSamples < 20)
+      return false;
+    const textEdgeRatio = textEdges / edgeSamples;
+    if (textEdgeRatio < 0.035)
+      return false;
+    const sortedR = [...rs].sort((a, b) => a - b);
+    const sortedG = [...gs].sort((a, b) => a - b);
+    const sortedB = [...bs].sort((a, b) => a - b);
+    const mid = Math.floor(rs.length / 2);
+    const medR = sortedR[mid];
+    const medG = sortedG[mid];
+    const medB = sortedB[mid];
+    const medLum = (medR + medG + medB) / 3;
+    if (medLum < 30 || medLum > 228)
+      return false;
+    let matchingModal = 0;
+    for (let i = 0;i < rs.length; i++) {
+      if (rgbColorDistance(rs[i], gs[i], bs[i], medR, medG, medB) < 0.14) {
+        matchingModal++;
+      }
+    }
+    const bgCohesion = matchingModal / rs.length;
+    if (bgCohesion < 0.45)
+      return false;
+    let outR = 0;
+    let outG = 0;
+    let outB = 0;
+    let outCnt = 0;
+    const leftEnd = Math.floor(width * 0.11);
+    const rightStart = Math.floor(width * 0.89);
+    for (let y = inY0;y < inY1; y += 2) {
+      for (let x = 2;x < leftEnd; x += 2) {
+        const idx = (y * width + x) * 4;
+        outR += rgba[idx];
+        outG += rgba[idx + 1];
+        outB += rgba[idx + 2];
+        outCnt++;
+      }
+      for (let x = rightStart;x < width - 2; x += 2) {
+        const idx = (y * width + x) * 4;
+        outR += rgba[idx];
+        outG += rgba[idx + 1];
+        outB += rgba[idx + 2];
+        outCnt++;
+      }
+    }
+    if (outCnt === 0)
+      return false;
+    outR /= outCnt;
+    outG /= outCnt;
+    outB /= outCnt;
+    const outerDiff = rgbColorDistance(outR, outG, outB, medR, medG, medB);
+    return outerDiff >= 0.08;
+  }
+
   class VideoCaptureEngine {
     analysisCanvas;
     analysisCtx;
+    minimapCanvas;
+    minimapCtx;
+    minimapTracker = new MinimapTracker;
     prevAnalysisRgba = null;
     roadModel = createInitialRoadModel();
     analysisW = 160;
     analysisH = 120;
+    minimapW = 64;
+    minimapH = 64;
     constructor() {
       this.analysisCanvas = document.createElement("canvas");
       this.analysisCanvas.width = this.analysisW;
@@ -611,9 +1693,19 @@
       if (!ctx)
         throw new Error("Failed to initialize 2D analysis canvas context");
       this.analysisCtx = ctx;
+      this.minimapCanvas = document.createElement("canvas");
+      this.minimapCanvas.width = this.minimapW;
+      this.minimapCanvas.height = this.minimapH;
+      const mCtx = this.minimapCanvas.getContext("2d", { willReadFrequently: true });
+      if (!mCtx)
+        throw new Error("Failed to initialize 2D minimap canvas context");
+      this.minimapCtx = mCtx;
     }
     resetTracking() {
       this.prevAnalysisRgba = null;
+    }
+    resetMinimap() {
+      this.minimapTracker.reset();
     }
     resetRoadModel() {
       this.roadModel = createInitialRoadModel();
@@ -656,11 +1748,28 @@
       const img = this.analysisCtx.getImageData(0, 0, this.analysisW, this.analysisH);
       const rgba = new Uint8ClampedArray(img.data);
       const analysis = analyzeRgbaFrame(rgba, this.prevAnalysisRgba, this.analysisW, this.analysisH, this.roadModel);
+      const dims = this.getSurfaceDimensions(surface);
+      let minimap;
+      if (dims.w > 0 && dims.h > 0) {
+        const mx = 0;
+        const my = Math.floor(dims.h * 0.58);
+        const mw = Math.max(2, Math.floor(dims.w * 0.28));
+        const mh = Math.max(2, Math.floor(dims.h * 0.41));
+        this.minimapCtx.drawImage(surface, mx, my, mw, mh, 0, 0, this.minimapW, this.minimapH);
+        const mmImg = this.minimapCtx.getImageData(0, 0, this.minimapW, this.minimapH);
+        minimap = analyzeMinimapRgba(mmImg.data, this.minimapW, this.minimapH, this.minimapTracker);
+      }
+      const activeMinimapPresent = Boolean(minimap?.visible && minimap.onRibbon && minimap.ribbonPixels < this.minimapW * this.minimapH * 0.35);
+      const raceFinishedCandidate = detectRaceFinished(rgba, this.analysisW, this.analysisH, activeMinimapPresent);
       if (mutateModel) {
         this.prevAnalysisRgba = rgba;
         this.roadModel = analysis.updatedRoadModel;
       }
-      return analysis;
+      return {
+        ...analysis,
+        minimap,
+        raceFinishedCandidate
+      };
     }
     captureFullFrame(surface) {
       const { w, h } = this.getSurfaceDimensions(surface);
@@ -675,7 +1784,7 @@
       ctx.drawImage(surface, 0, 0, w, h);
       return snap;
     }
-    captureTile(surface, tMs, axes, buttons, analysis, tileW = 320, tileH = 240) {
+    captureTile(surface, tMs, axes, buttons, analysis, tileW = 320, tileH = 240, depth) {
       const tile = document.createElement("canvas");
       tile.width = tileW;
       tile.height = tileH;
@@ -695,7 +1804,11 @@
         redAlertRatio: analysis.redAlertRatio,
         roadOffsetX: analysis.roadOffsetX,
         roadCurvature: analysis.roadCurvature,
-        roadConfidence: analysis.roadConfidence
+        roadConfidence: analysis.roadConfidence,
+        depthCorridorX: depth?.corridorOffsetX,
+        depthClearance: depth?.centerClearance,
+        minimapTurnAhead: analysis.minimap?.turnAhead,
+        minimapHeadingDeg: analysis.minimap?.headingDeg
       };
     }
   }
@@ -728,6 +1841,15 @@
       ctx.lineTo(px, py + 7);
       ctx.lineTo(px - 7, py);
       ctx.closePath();
+      ctx.stroke();
+    }
+    if (typeof sample.depthCorridorX === "number") {
+      const dx = x0 + (sample.depthCorridorX + 1) * 0.5 * w;
+      const dy = y0 + h * 0.37;
+      ctx.strokeStyle = "#4ade80";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(dx, dy, 6, 0, Math.PI * 2);
       ctx.stroke();
     }
     const stickCx = x0 + w - 28;
@@ -799,7 +1921,16 @@
     ctx.fillRect(0, 0, totalW, headerH);
     ctx.fillStyle = "#f8fafc";
     ctx.font = "bold 15px ui-monospace, Menlo, monospace";
-    const headerText = `${summary.label} | stop=${summary.stopReason} | ${Math.round(summary.durationMs)}ms | avgΔ=${(summary.avgMotion * 100).toFixed(1)}% | roadConf=${(summary.avgRoadConfidence * 100).toFixed(0)}%`;
+    const extras = [];
+    if (summary.depthFramesUsed)
+      extras.push(`d3=${summary.depthFramesUsed}`);
+    if (summary.unwedgeCount)
+      extras.push(`uw=${summary.unwedgeCount}`);
+    if (typeof summary.minimapTurnAhead === "number" && Math.abs(summary.minimapTurnAhead) > 0.05) {
+      extras.push(`mm=${summary.minimapTurnAhead >= 0 ? "+" : ""}${summary.minimapTurnAhead.toFixed(2)}`);
+    }
+    const extraStr = extras.length > 0 ? ` | ${extras.join(" ")}` : "";
+    const headerText = `${summary.label} | stop=${summary.stopReason} | ${Math.round(summary.durationMs)}ms | avgΔ=${(summary.avgMotion * 100).toFixed(1)}% | roadConf=${(summary.avgRoadConfidence * 100).toFixed(0)}%${extraStr}`;
     ctx.fillText(headerText, 12, 24);
     for (let i = 0;i < chosen.length; i++) {
       const col = i % cols;
@@ -876,12 +2007,24 @@
       nextState: { prevError: err, prevSteer: steer }
     };
   }
-  function createGameplayOrchestrator(gamepad, captureEngine) {
+  function createGameplayOrchestrator(gamepad, captureEngine, depthEngine) {
     let engine = captureEngine ?? null;
+    let depth = depthEngine ?? null;
     function getEngine() {
       if (!engine)
         engine = new VideoCaptureEngine;
       return engine;
+    }
+    function getDepthEngine() {
+      if (!depth)
+        depth = new BrowserDepthEngine;
+      return depth;
+    }
+    async function initDepthEngine() {
+      return await getDepthEngine().init();
+    }
+    function getDepthStatus() {
+      return getDepthEngine().getStatus();
     }
     function resetRoadModel() {
       const eng = getEngine();
@@ -889,7 +2032,7 @@
         eng.resetRoadModel();
       }
     }
-    function summarizeSamples(samples, label, stopReason, durationMs, stuckDetected, ok, error, includeSheetDataUrl = false, surface = null, options = {}) {
+    function summarizeSamples(samples, label, stopReason, durationMs, stuckDetected, ok, error, includeSheetDataUrl = false, surface = null, options = {}, extras = {}) {
       const count = samples.length;
       let sumMotion = 0;
       let minMotion = count > 1 ? Infinity : 0;
@@ -919,7 +2062,16 @@
       const meanCurvature = count > 0 ? sumCurvature / count : 0;
       let sheetDataUrl;
       if (count > 0 && (options.showSheetOverlay ?? true)) {
-        const sheet = buildContactSheetCanvas(samples, surface, { label, stopReason, durationMs, avgMotion, avgRoadConfidence }, options.crops ?? DEFAULT_STK_CROPS);
+        const sheet = buildContactSheetCanvas(samples, surface, {
+          label,
+          stopReason,
+          durationMs,
+          avgMotion,
+          avgRoadConfidence,
+          depthFramesUsed: extras.depthFramesUsed,
+          unwedgeCount: extras.unwedgeCount,
+          minimapTurnAhead: extras.minimapTurnAhead
+        }, options.crops ?? DEFAULT_STK_CROPS);
         showSheetOverlay(sheet);
         if (includeSheetDataUrl) {
           sheetDataUrl = sheet.toDataURL("image/jpeg", 0.82);
@@ -940,6 +2092,12 @@
         meanSteerX,
         meanCurvature,
         stuckDetected,
+        unwedgeCount: extras.unwedgeCount,
+        raceFinished: extras.raceFinished,
+        depthFramesUsed: extras.depthFramesUsed,
+        minimapHeadingDeg: extras.minimapHeadingDeg,
+        minimapTurnAhead: extras.minimapTurnAhead,
+        minimapDistance: extras.minimapDistance,
         finalState: gamepad.getState(),
         sheetDataUrl
       };
@@ -1042,7 +2200,7 @@
     }
     async function driveServo(options = {}) {
       const {
-        maxDurationMs = 3000,
+        maxDurationMs = 7000,
         tickMs = 33,
         kp = 1.25,
         kd = 0.25,
@@ -1060,6 +2218,13 @@
         lowConfidenceMs = 280,
         stopOnRedAlert = true,
         redAlertThreshold = 0.035,
+        autoUnwedge = true,
+        maxUnwedgeAttempts = 2,
+        unwedgeReverseMs = 420,
+        unwedgeForwardMs = 480,
+        useInPageDepth = true,
+        useMinimapOdometry = true,
+        stopOnRaceFinish = true,
         unpause = true,
         unpauseButton = BTN.A,
         pause = true,
@@ -1075,6 +2240,7 @@
       } = options;
       hideSheetOverlay();
       const eng = getEngine();
+      const dEngine = getDepthEngine();
       eng.resetTracking();
       if (!unpause && typeof eng.resetRoadModel === "function") {
         eng.resetRoadModel();
@@ -1096,6 +2262,9 @@
           meanSteerX: 0,
           meanCurvature: 0,
           stuckDetected: false,
+          unwedgeCount: 0,
+          raceFinished: false,
+          depthFramesUsed: 0,
           finalState: gamepad.getState()
         };
       }
@@ -1103,11 +2272,25 @@
       let pidState = { prevError: 0, prevSteer: 0 };
       let stopReason = "horizon_complete";
       let stuckDetected = false;
+      let raceFinished = false;
+      let unwedgeCount = 0;
+      let depthFramesUsed = 0;
+      let lastSeenDepthTs = -1;
+      let minimapHeadingDeg = null;
+      let minimapTurnAhead = 0;
+      let minimapDistance = 0;
       let errMsg;
       let ok = true;
       let prePauseSurface = null;
       const startedAt = performance.now();
       try {
+        if (useInPageDepth && dEngine.getStatus().mode === "main_thread") {
+          const preDepth = await dEngine.inferOnce(surface);
+          if (preDepth) {
+            lastSeenDepthTs = preDepth.timestamp;
+            depthFramesUsed++;
+          }
+        }
         if (unpause) {
           await gamepad.tapButton(unpauseButton, 90, unpauseSettleMs);
         }
@@ -1117,6 +2300,8 @@
         let lastTileAt = -Infinity;
         let lowMotionAcc = 0;
         let lowConfAcc = 0;
+        let activeMotionTicks = 0;
+        let finishConsecutiveTicks = 0;
         let tickIndex = 0;
         while (true) {
           const now = performance.now();
@@ -1128,7 +2313,32 @@
           const dtMs = Math.max(10, now - lastTick);
           lastTick = now;
           const analysis = eng.sampleAnalysis(surface);
+          if (analysis.motionScore > 0.012) {
+            activeMotionTicks++;
+          }
+          const rawDepth = useInPageDepth ? dEngine.submitFrameNonBlocking(surface) : null;
+          const freshDepth = rawDepth && now - rawDepth.timestamp < 1800 ? rawDepth : null;
+          if (freshDepth && freshDepth.timestamp !== lastSeenDepthTs) {
+            lastSeenDepthTs = freshDepth.timestamp;
+            depthFramesUsed++;
+          }
           let visualTarget = analysis.roadOffsetX + (analysis.roadCurvature ?? 0) * 0.18;
+          const mm = analysis.minimap;
+          if (useMinimapOdometry && mm && mm.visible) {
+            minimapHeadingDeg = mm.headingDeg;
+            minimapDistance = mm.distance;
+            if (mm.headingValid) {
+              minimapTurnAhead = mm.turnAhead;
+              const mmWeight = analysis.roadConfidence >= 0.45 ? 0.2 : 0.4;
+              visualTarget = (1 - mmWeight) * visualTarget + mmWeight * clamp(mm.turnAhead, -1, 1);
+            } else {
+              minimapTurnAhead = 0;
+            }
+          }
+          if (freshDepth) {
+            const dWeight = freshDepth.wallOrObstacleAhead || freshDepth.centerClearance < 0.48 ? 0.55 : 0.22;
+            visualTarget = (1 - dWeight) * visualTarget + dWeight * clamp(freshDepth.corridorOffsetX, -1, 1);
+          }
           if (typeof depthSteerHint === "number" && Number.isFinite(depthSteerHint)) {
             const w = clamp(depthHintWeight, 0, 1);
             visualTarget = (1 - w) * visualTarget + w * clamp(depthSteerHint, -1, 1);
@@ -1138,15 +2348,16 @@
           pidState = pid.nextState;
           gamepad.setStick(0, pid.steer, 0);
           if (throttleModulation && elapsed > 380) {
-            const absSteer = Math.abs(pid.steer);
+            const absSteer = Math.max(Math.abs(pid.steer), Math.abs(target) * 0.85);
             const absCurv = Math.abs(analysis.roadCurvature ?? 0);
-            if (autoCornerBrake && elapsed > 650 && absSteer > 0.78 && absCurv > 0.22 && analysis.motionScore > 0.025) {
+            const confirmedTightCorner = Math.abs(analysis.roadOffsetX) > 0.48 || absCurv > 0.34 || freshDepth !== null && freshDepth.centerClearance < 0.42;
+            if (autoCornerBrake && elapsed > 1100 && analysis.motionScore > 0.042 && absSteer > 0.84 && confirmedTightCorner) {
               gamepad.setButton(gasButton, 0);
               gamepad.setButton(BTN.X, tickIndex % 3 === 0 ? 1 : 0);
             } else if (absSteer > 0.68 || absCurv > 0.3) {
               gamepad.setButton(BTN.X, 0);
               gamepad.setButton(gasButton, tickIndex % 3 === 0 ? 1 : 0);
-            } else if (absSteer > 0.44 || absCurv > 0.18) {
+            } else if (absSteer > 0.44 || absCurv > 0.18 || freshDepth !== null && freshDepth.centerClearance < 0.52) {
               gamepad.setButton(BTN.X, 0);
               gamepad.setButton(gasButton, tickIndex % 2 === 0 ? 1 : 0);
             } else {
@@ -1161,12 +2372,68 @@
           const state = gamepad.getState();
           if (now - lastTileAt >= sampleIntervalMs) {
             lastTileAt = now;
-            samples.push(eng.captureTile(surface, elapsed, state.axes, state.buttons, analysis));
+            samples.push(eng.captureTile(surface, elapsed, state.axes, state.buttons, analysis, 320, 240, freshDepth));
+          }
+          if (stopOnRaceFinish && elapsed > 1200 && activeMotionTicks >= 4) {
+            if (analysis.raceFinishedCandidate) {
+              finishConsecutiveTicks++;
+              if (finishConsecutiveTicks >= 4) {
+                raceFinished = true;
+                stopReason = "race_finished";
+                gamepad.resetAll();
+                await gamepad.sleep(200);
+                break;
+              }
+            } else {
+              finishConsecutiveTicks = 0;
+            }
           }
           if (elapsed > 350) {
             if (stopOnStuck && analysis.motionScore < stuckThreshold) {
               lowMotionAcc += dtMs;
               if (lowMotionAcc >= stuckDurationMs) {
+                if (autoUnwedge && unwedgeCount < maxUnwedgeAttempts) {
+                  unwedgeCount++;
+                  lowMotionAcc = 0;
+                  lowConfAcc = 0;
+                  let uwDepth = freshDepth;
+                  if (useInPageDepth && !uwDepth && dEngine.getStatus().mode === "main_thread") {
+                    uwDepth = await dEngine.inferOnce(surface);
+                    if (uwDepth && uwDepth.timestamp !== lastSeenDepthTs) {
+                      lastSeenDepthTs = uwDepth.timestamp;
+                      depthFramesUsed++;
+                    }
+                  }
+                  let escapeSign = unwedgeCount % 2 === 1 ? 1 : -1;
+                  if (uwDepth && Math.abs(uwDepth.corridorOffsetX) > 0.12) {
+                    escapeSign = Math.sign(uwDepth.corridorOffsetX);
+                  } else if (useMinimapOdometry && mm?.visible && mm.headingValid && Math.abs(mm.turnAhead) > 0.12) {
+                    escapeSign = Math.sign(mm.turnAhead);
+                  } else if (Math.abs(analysis.roadOffsetX) > 0.08) {
+                    escapeSign = Math.sign(analysis.roadOffsetX);
+                  }
+                  gamepad.setButton(gasButton, 0);
+                  gamepad.setStick(0, 0, 0);
+                  gamepad.setButton(BTN.X, 1);
+                  await gamepad.sleep(unwedgeReverseMs);
+                  gamepad.setButton(BTN.X, 0);
+                  await gamepad.sleep(40);
+                  if (typeof eng.resetRoadModel === "function") {
+                    eng.resetRoadModel();
+                  }
+                  gamepad.setStick(0, 0.78 * escapeSign, 0);
+                  gamepad.setButton(gasButton, 1);
+                  await gamepad.sleep(unwedgeForwardMs);
+                  const uwAnalysis = eng.sampleAnalysis(surface);
+                  const uwState = gamepad.getState();
+                  lastTileAt = performance.now();
+                  samples.push(eng.captureTile(surface, lastTileAt - driveStart, uwState.axes, uwState.buttons, uwAnalysis, 320, 240, uwDepth));
+                  pidState = { prevError: 0, prevSteer: 0.5 * escapeSign };
+                  lastTick = performance.now();
+                  lowMotionAcc = 0;
+                  lowConfAcc = 0;
+                  continue;
+                }
                 stuckDetected = true;
                 stopReason = "stuck";
                 break;
@@ -1183,8 +2450,14 @@
               break;
             }
             if (stopOnLowConfidence && analysis.roadConfidence < minConfidence) {
+              const depthConfirmsTrack = freshDepth !== null && freshDepth.maxClearance >= 0.48;
+              const minimapConfirmsTrack = useMinimapOdometry && Boolean(mm?.visible && mm.onRibbon && mm.headingValid);
+              const effectiveLowConfMs = depthConfirmsTrack || minimapConfirmsTrack ? lowConfidenceMs * 2.2 : lowConfidenceMs;
+              if (depthConfirmsTrack && freshDepth.centerClearance > 0.55 && Math.abs(target) < 0.25 && typeof eng.resetRoadModel === "function") {
+                eng.resetRoadModel();
+              }
               lowConfAcc += dtMs;
-              if (lowConfAcc >= lowConfidenceMs) {
+              if (lowConfAcc >= effectiveLowConfMs) {
                 stopReason = "low_confidence";
                 break;
               }
@@ -1196,7 +2469,8 @@
         }
         const finalAnalysis = eng.sampleAnalysis(surface);
         const finalSnap = gamepad.getState();
-        samples.push(eng.captureTile(surface, performance.now() - driveStart, finalSnap.axes, finalSnap.buttons, finalAnalysis));
+        const latestDepth = useInPageDepth ? dEngine.getStatus().lastResult : null;
+        samples.push(eng.captureTile(surface, performance.now() - driveStart, finalSnap.axes, finalSnap.buttons, finalAnalysis, 320, 240, latestDepth));
       } catch (err) {
         ok = false;
         stopReason = "error";
@@ -1207,7 +2481,7 @@
             prePauseSurface = eng.captureFullFrame(surface);
           } catch {}
         }
-        if (pause) {
+        if (pause && !raceFinished) {
           try {
             await gamepad.tapButton(pauseButton, 90, pauseSettleMs);
           } catch {}
@@ -1217,7 +2491,14 @@
         }
       }
       const durationMs = performance.now() - startedAt;
-      return summarizeSamples(samples, label, stopReason, durationMs, stuckDetected, ok, errMsg, false, prePauseSurface ?? surface, options);
+      return summarizeSamples(samples, label, stopReason, durationMs, stuckDetected, ok, errMsg, false, prePauseSurface ?? surface, options, {
+        unwedgeCount,
+        raceFinished,
+        depthFramesUsed,
+        minimapHeadingDeg,
+        minimapTurnAhead,
+        minimapDistance
+      });
     }
     async function smartRescue(options = {}) {
       return runChunk(async ({ api }) => {
@@ -1230,6 +2511,7 @@
     }
     function inspectFrame() {
       const eng = getEngine();
+      const dEngine = getDepthEngine();
       const surface = eng.findVideoSurface();
       if (!surface) {
         return {
@@ -1241,7 +2523,8 @@
           redAlertRatio: 0,
           roadOffsetX: 0,
           roadCurvature: 0,
-          roadConfidence: 0
+          roadConfidence: 0,
+          depth: dEngine.getStatus()
         };
       }
       const dims = eng.getSurfaceDimensions(surface);
@@ -1255,7 +2538,9 @@
         redAlertRatio: analysis.redAlertRatio,
         roadOffsetX: analysis.roadOffsetX,
         roadCurvature: analysis.roadCurvature,
-        roadConfidence: analysis.roadConfidence
+        roadConfidence: analysis.roadConfidence,
+        minimap: analysis.minimap,
+        depth: dEngine.getStatus()
       };
     }
     return {
@@ -1264,6 +2549,8 @@
       smartRescue,
       hideOverlay: hideSheetOverlay,
       resetRoadModel,
+      initDepthEngine,
+      getDepthStatus,
       inspectFrame
     };
   }
@@ -1272,7 +2559,7 @@
   var gamepad = createGamepadController();
   var orchestrator = createGameplayOrchestrator(gamepad);
   var gameplayApi = {
-    version: "4.0.0",
+    version: "5.0.0",
     BTN,
     simGamepad: gamepad.simGamepad,
     setStick: gamepad.setStick,
@@ -1289,8 +2576,10 @@
     smartRescue: orchestrator.smartRescue,
     hideOverlay: hideSheetOverlay,
     resetRoadModel: orchestrator.resetRoadModel,
+    initDepthEngine: orchestrator.initDepthEngine,
+    getDepthStatus: orchestrator.getDepthStatus,
     inspectFrame: orchestrator.inspectFrame
   };
   window["gameplayApi"] = gameplayApi;
-  console.log("Gameplay - hooked v4 (biome-agnostic pure-pursuit servo + contrastive shoulder + pre-pause contact-sheet)");
+  console.log("Gameplay - hooked v5 (in-page 3D depth worker + 30Hz minimap odometry + autoUnwedge + finish detection)");
 })();
