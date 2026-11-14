@@ -50,6 +50,37 @@ export interface GamepadController {
   dispatchConnected(): void;
 }
 
+function adoptPrototypeSafely<T extends object>(obj: T, ctor: unknown): T {
+  if (typeof ctor !== "function" || !ctor.prototype) {
+    return obj;
+  }
+  const proto = ctor.prototype as object;
+  const descriptors = Object.getOwnPropertyDescriptors(proto);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (key === "constructor") continue;
+    const desc = (descriptors as Record<PropertyKey, PropertyDescriptor>)[key];
+    if (
+      desc &&
+      typeof desc.get === "function" &&
+      !Object.prototype.hasOwnProperty.call(obj, key)
+    ) {
+      // Shadow Blink WebIDL prototype getters with null data properties so enumeration never throws Illegal invocation.
+      Object.defineProperty(obj, key, {
+        value: null,
+        writable: true,
+        enumerable: desc.enumerable ?? true,
+        configurable: true,
+      });
+    }
+  }
+  try {
+    Object.setPrototypeOf(obj, proto);
+  } catch {
+    // Ignore non-extensible or sealed targets
+  }
+  return obj;
+}
+
 /**
  * Installs a deterministic virtual standard gamepad by overriding navigator.getGamepads
  * and dispatching `gamepadconnected` immediately when injected post-load.
@@ -59,26 +90,41 @@ export function createGamepadController(
   targetNavigator: Navigator = navigator,
   targetDocument: Document | undefined = typeof document !== "undefined" ? document : undefined,
 ): GamepadController {
-  const gamepadAxes = [0, 0, 0, 0];
-  const gamepadButtons: GamepadButton[] = Array.from({ length: 17 }, () => ({
-    value: 0,
-    pressed: false,
-    touched: false,
-  }));
+  const winRecord = targetWindow as unknown as Record<string, unknown>;
 
-  const simGamepad: Gamepad = {
-    id: "Gameplay - SimGamepad",
-    index: 0,
-    connected: true,
-    timestamp: Date.now(),
-    axes: gamepadAxes,
-    buttons: gamepadButtons,
-    vibrationActuator: undefined as unknown as GamepadHapticActuator,
-    mapping: "standard",
-  };
+  function nowTimestamp(): number {
+    const perf = winRecord.performance as Performance | undefined;
+    return typeof perf?.now === "function" ? perf.now() : Date.now();
+  }
+
+  const gamepadAxes = [0, 0, 0, 0];
+  const gamepadButtons: GamepadButton[] = Array.from({ length: 17 }, () =>
+    adoptPrototypeSafely(
+      {
+        value: 0,
+        pressed: false,
+        touched: false,
+      } as GamepadButton,
+      winRecord.GamepadButton,
+    ),
+  );
+
+  const simGamepad: Gamepad = adoptPrototypeSafely(
+    {
+      id: "Gameplay - SimGamepad",
+      index: 0,
+      connected: true,
+      timestamp: nowTimestamp(),
+      axes: gamepadAxes,
+      buttons: gamepadButtons,
+      vibrationActuator: null as unknown as GamepadHapticActuator,
+      mapping: "standard",
+    } as Gamepad,
+    winRecord.Gamepad,
+  );
 
   function hookGetGamepads(): (Gamepad | null)[] {
-    return [simGamepad];
+    return [simGamepad, null, null, null];
   }
 
   try {
@@ -92,12 +138,17 @@ export function createGamepadController(
   }
 
   function updateGamepad(): void {
-    (simGamepad as { timestamp: number }).timestamp = Date.now();
+    (simGamepad as { timestamp: number }).timestamp = nowTimestamp();
   }
 
   function dispatchConnected(): void {
     const event = new Event("gamepadconnected") as Event & { gamepad: Gamepad };
-    event.gamepad = simGamepad;
+    Object.defineProperty(event, "gamepad", {
+      value: simGamepad,
+      enumerable: true,
+      configurable: true,
+    });
+    adoptPrototypeSafely(event, winRecord.GamepadEvent);
     targetWindow.dispatchEvent(event);
   }
 

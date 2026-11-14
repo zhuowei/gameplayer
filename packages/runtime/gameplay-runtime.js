@@ -22,25 +22,54 @@
   function clamp(val, min, max) {
     return Math.max(min, Math.min(max, val));
   }
+  function adoptPrototypeSafely(obj, ctor) {
+    if (typeof ctor !== "function" || !ctor.prototype) {
+      return obj;
+    }
+    const proto = ctor.prototype;
+    const descriptors = Object.getOwnPropertyDescriptors(proto);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (key === "constructor")
+        continue;
+      const desc = descriptors[key];
+      if (desc && typeof desc.get === "function" && !Object.prototype.hasOwnProperty.call(obj, key)) {
+        Object.defineProperty(obj, key, {
+          value: null,
+          writable: true,
+          enumerable: desc.enumerable ?? true,
+          configurable: true
+        });
+      }
+    }
+    try {
+      Object.setPrototypeOf(obj, proto);
+    } catch {}
+    return obj;
+  }
   function createGamepadController(targetWindow = window, targetNavigator = navigator, targetDocument = typeof document !== "undefined" ? document : undefined) {
+    const winRecord = targetWindow;
+    function nowTimestamp() {
+      const perf = winRecord.performance;
+      return typeof perf?.now === "function" ? perf.now() : Date.now();
+    }
     const gamepadAxes = [0, 0, 0, 0];
-    const gamepadButtons = Array.from({ length: 17 }, () => ({
+    const gamepadButtons = Array.from({ length: 17 }, () => adoptPrototypeSafely({
       value: 0,
       pressed: false,
       touched: false
-    }));
-    const simGamepad = {
+    }, winRecord.GamepadButton));
+    const simGamepad = adoptPrototypeSafely({
       id: "Gameplay - SimGamepad",
       index: 0,
       connected: true,
-      timestamp: Date.now(),
+      timestamp: nowTimestamp(),
       axes: gamepadAxes,
       buttons: gamepadButtons,
-      vibrationActuator: undefined,
+      vibrationActuator: null,
       mapping: "standard"
-    };
+    }, winRecord.Gamepad);
     function hookGetGamepads() {
-      return [simGamepad];
+      return [simGamepad, null, null, null];
     }
     try {
       targetNavigator.getGamepads = hookGetGamepads;
@@ -52,11 +81,16 @@
       });
     }
     function updateGamepad() {
-      simGamepad.timestamp = Date.now();
+      simGamepad.timestamp = nowTimestamp();
     }
     function dispatchConnected() {
       const event = new Event("gamepadconnected");
-      event.gamepad = simGamepad;
+      Object.defineProperty(event, "gamepad", {
+        value: simGamepad,
+        enumerable: true,
+        configurable: true
+      });
+      adoptPrototypeSafely(event, winRecord.GamepadEvent);
       targetWindow.dispatchEvent(event);
     }
     if (targetDocument && targetDocument.readyState !== "loading") {

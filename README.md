@@ -21,7 +21,7 @@ Driving a 30–60 Hz continuous game directly through a 0.1 Hz turn-based LLM to
 ## Documentation & Post-Mortems
 
 - **[AGENTS.md](AGENTS.md)**: Always-on workspace rules, sandbox/MCP conventions, and mandatory vision/control testing invariants.
-- **[docs/lessons-learned.md](docs/lessons-learned.md)**: Quantitative comparison across six SuperTuxKart runs (four Tutorial iterations cutting rescues `13 → 2`, Run 5 zero-shot Singleplayer *Antediluvian Abyss* with Runtime v4 + `bun run perceive`, and Run 6 zero-shot *Blackhill Mansion* with Runtime `v5.0.0` → `v5.0.1`), step-sizing tradeoffs, why moving 3D depth/minimap odometry into the real-time loop eliminates 86% turn overhead, and foundation-model caveats (NitroGen, SIMA 2).
+- **[docs/lessons-learned.md](docs/lessons-learned.md)**: Quantitative comparison across six SuperTuxKart runs (four Tutorial iterations cutting rescues `13 → 2`, Run 5 zero-shot Singleplayer *Antediluvian Abyss* with Runtime v4 + `bun run perceive`, and Run 6 zero-shot *Blackhill Mansion* with Runtime `v5.0.0` → `v5.0.1`), cross-game Tier-3 evaluation (*Fortnite: Save the World* on `play.xbox.com` covering Preview vs. Production UI, CSP-safe `perceive`, and unpaused `runChunk`), step-sizing tradeoffs, why moving 3D depth/minimap odometry into the real-time loop eliminates 86% turn overhead, and foundation-model caveats (NitroGen, SIMA 2).
 
 ## Quick Start
 

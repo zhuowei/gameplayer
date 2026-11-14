@@ -34,16 +34,21 @@ For game-specific bindings, track hazards, and empirical post-mortems, load on d
    })
    ```
    Confirm `version: "5.0.1"`, `frame.foundSurface: true`, and `depth.ready: true` (`mode: "worker"` for non-blocking background inference, or `"main_thread"` discrete fallback if CSP blocks `blob:` Workers).
+4. **Cloud Streaming Portals & Strict CSP (`play.xbox.com`)**:
+   - **Require Production UI on Xbox Cloud**: Verify the top-left grip pill shows **`[Xbox Logo | ⋮⋮]`** (Production UI). The **Preview UI** (`⋮⋮`-only pill without the Xbox logo) polls `navigator.getGamepads()` yet drops synthetic inputs in gameplay and maps `BTN.START` to the Preview Guide; ask the user to restart in the Production UI before proceeding.
+   - **Do not disable browser CSP via MCP config**: Never launch or configure the MCP server with `--disable-web-security` or CDP `setBypassCSP`. Injecting `packages/runtime/gameplay-runtime.js` via `evaluate_script` works under strict CSP as-is; on strict-CSP portals (`play.xbox.com`), skip `.cache/gameplay-depth-bundle.js` (avoiding a wasted `52.87 MB` upload) and use host `bun run perceive` (`§3.B`) by default. If continuous 30 Hz in-page WASM depth (`initDepthEngine()`) or CSP-blocked in-page scripting is needed, ask the user to manually enable a site-scoped CSP-relaxing Chrome extension for that origin.
 
 ---
 
 ## 2. Pre-Flight Calibration (Before Starting Gameplay)
 
-Before entering real-time action, verify four behaviors using `hideOverlay()` + single JPEG screenshots (`format: "jpeg"`, `quality: 85`, omitting `filePath`):
+Before entering real-time action, verify these behaviors using `hideOverlay()` + single JPEG screenshots (`format: "jpeg"`, `quality: 85`, omitting `filePath`):
 1. **Menu navigation**: Test whether menus respond to `BTN.DPAD_*` taps (`tapButton(BTN.DPAD_DOWN, 90, 180)`) or short analog Left Stick pulses (`await window.gameplayApi.pulseStick(0, x, y, 65, 220)`—e.g. SuperTuxKart's Main Menu ignores `DPAD_*` and moves 1 slot per ~65ms stick pulse).
 2. **Pause & Unpause buttons**: Confirm which button opens Pause (usually `BTN.START = 9`) and which resumes (`BTN.A = 0` or `BTN.START = 9`). Runtime `v5.0.1` resets all sticks/buttons **before** tapping `BTN.START` (preventing horizontal Pause-menu scroll onto `Exit Race`), snapshots `FINAL MINIMAP` / `FINAL TUTORIAL PROMPT` / `FINAL LOOKAHEAD & ALERT` before pausing, and skips pausing only when `raceFinished === true`.
 3. **Edge-triggered inputs across Pause**: Verify whether holding throttle across unpause works or is ignored until re-pressed *after* the pause dialog closes (handled automatically by `driveServo` and `runChunk` via `unpauseSettleMs: 220`).
 4. **Overloaded buttons**: Note buttons whose meaning flips between paused and unpaused states (e.g., in SuperTuxKart `BTN.A` confirms/unpauses in menus, but **looks behind** during live driving).
+5. **Online / Co-Op Party Privacy**: Before launching an online or co-op mission (e.g., *Fortnite: Save the World*), toggle matchmaking to **No Fill / Private** unless the user asks for teammates, and keep turn latency bounded so mission activity/AFK timers do not kick the session.
+6. **Hybrid KBM + Controller & Dual-Stick Calibration**: Never send DOM `click`s inside streamed Cloud Gaming panes while using `window.gameplayApi` (it can switch session focus to `Mouse & keyboard`). On 3D dual-stick games, run a short probe yaw (`~150–250ms` on Right Stick `1`) to measure degrees per `100ms` against compass/landmarks before tight indoor turns.
 
 ---
 
@@ -97,6 +102,21 @@ async () => await window.gameplayApi.runChunk(async ({ api }) => {
   await api.sleep(350);
 }, { holdGasButton: window.gameplayApi.BTN.Y, label: "seg-sharp-left" })
 ```
+
+For **unpausable 3D / cloud-streamed games**, never abandon `runChunk` for blind raw `setStick`/`sleep` loops (doing so loses intermediate 4×2 motion tiles and `shouldAbort()` wall-pinning aborts). Instead, disable the default `BTN.A` unpause and `BTN.START` pause via `{ unpause: false, pause: false }`:
+```js
+async () => await window.gameplayApi.runChunk(async ({ api, shouldAbort }) => {
+  api.setStick(1, -0.5, 0); // calibrated camera yaw
+  await api.sleep(250);
+  api.setStick(1, 0, 0);
+  api.setStick(0, 0, -0.85); // walk forward unless stuck against wall
+  for (let i = 0; i < 6 && !shouldAbort(); i++) {
+    await api.sleep(200);
+  }
+  api.setStick(0, 0, 0);
+}, { unpause: false, pause: false, label: "seg-3d-move" })
+```
+After inspecting the 4×2 contact sheet, call `window.gameplayApi.hideOverlay()` before taking a clean full-resolution frame or starting the next unpaused action.
 
 ---
 

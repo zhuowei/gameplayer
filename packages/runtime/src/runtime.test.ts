@@ -116,6 +116,65 @@ describe("gamepad controller", () => {
     await expect(gp.pulseStick(2, 1, 0)).rejects.toThrow();
   });
 
+  test("adopts Gamepad, GamepadButton, and GamepadEvent prototypes safely, uses performance.now timestamp, and returns 4-slot tuple", () => {
+    class MockGamepadButton {
+      get pressed(): boolean {
+        throw new TypeError("Illegal invocation");
+      }
+      get extraGetter(): unknown {
+        throw new TypeError("Illegal invocation");
+      }
+    }
+    class MockGamepad {
+      get id(): string {
+        throw new TypeError("Illegal invocation");
+      }
+      get pose(): unknown {
+        throw new TypeError("Illegal invocation");
+      }
+    }
+    class MockGamepadEvent extends Event {
+      get gamepad(): Gamepad {
+        throw new TypeError("Illegal invocation");
+      }
+    }
+
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv("complete");
+    const winRec = mockWindow as unknown as Record<string, unknown>;
+    winRec.GamepadButton = MockGamepadButton;
+    winRec.Gamepad = MockGamepad;
+    winRec.GamepadEvent = MockGamepadEvent;
+    winRec.performance = { now: () => 4242.5 };
+
+    const received: unknown[] = [];
+    mockWindow.addEventListener("gamepadconnected", (ev) => received.push(ev));
+
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+    expect(gp.simGamepad instanceof MockGamepad).toBe(true);
+    expect(gp.simGamepad.buttons[0] instanceof MockGamepadButton).toBe(true);
+    expect(received.length).toBe(1);
+    expect(received[0] instanceof MockGamepadEvent).toBe(true);
+    expect((received[0] as Event).type).toBe("gamepadconnected");
+    expect((received[0] as { gamepad: Gamepad }).gamepad).toBe(gp.simGamepad);
+
+    const gpRecord = gp.simGamepad as unknown as Record<string, unknown>;
+    for (const k in gpRecord) {
+      expect(() => gpRecord[k]).not.toThrow();
+    }
+    expect(gpRecord.pose).toBeNull();
+
+    const btnRecord = gp.simGamepad.buttons[0] as unknown as Record<string, unknown>;
+    for (const k in btnRecord) {
+      expect(() => btnRecord[k]).not.toThrow();
+    }
+    expect(btnRecord.extraGetter).toBeNull();
+
+    const pads = mockNav.getGamepads();
+    expect(pads.length).toBe(4);
+    expect(pads).toEqual([gp.simGamepad, null, null, null]);
+    expect(gp.simGamepad.timestamp).toBe(4242.5);
+  });
+
   test("runChunk exposes api.BTN, unpauses before gas, snapshots pre-pause frame before START, and resets on error", async () => {
     const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv();
     const events: string[] = [];
@@ -878,6 +937,42 @@ describe("vision & PID servo", () => {
       },
     );
     expect(chunkRes.ok).toBe(true);
+
+    // Snippet 5: Unpaused 3D dual-stick runChunk (SKILL.md §3.C, Fortnite/Xbox Cloud finding)
+    let sawBtnA = false;
+    let sawBtnStart = false;
+    const prevSetTimeout = mockWindow.setTimeout;
+    mockWindow.setTimeout = ((cb: TimerHandler) => {
+      const pad = mockNav.getGamepads()[0];
+      if (pad?.buttons[BTN.A]?.pressed) sawBtnA = true;
+      if (pad?.buttons[BTN.START]?.pressed) sawBtnStart = true;
+      return globalThis.setTimeout(cb, 2);
+    }) as unknown as typeof window.setTimeout;
+    try {
+      const unpausedRes = await gWin.window.gameplayApi.runChunk(
+        async ({ api, shouldAbort }) => {
+          api.setStick(1, -0.5, 0); // calibrated camera yaw
+          await api.sleep(2);
+          api.setStick(1, 0, 0);
+          api.setStick(0, 0, -0.85); // walk forward unless stuck against wall
+          for (let i = 0; i < 6 && !shouldAbort(); i++) {
+            await api.sleep(2);
+          }
+          api.setStick(0, 0, 0);
+        },
+        {
+          unpause: false,
+          pause: false,
+          showSheetOverlay: false,
+          label: "seg-3d-move",
+        },
+      );
+      expect(unpausedRes.ok).toBe(true);
+    } finally {
+      mockWindow.setTimeout = prevSetTimeout;
+    }
+    expect(sawBtnA).toBe(false);
+    expect(sawBtnStart).toBe(false);
   });
 
   test("neutralizes stick and gas BEFORE pressing BTN.START pause (seg-40 regression)", async () => {
