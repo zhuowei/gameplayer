@@ -165,12 +165,27 @@ export function createGamepadController(
     });
   }
 
-  function setStick(index: number, x: number, y: number): void {
-    if (index < 0 || index >= gamepadAxes.length / 2) {
+  function resolveStickIndex(index: number | "left" | "right"): number {
+    const idx = index === "left" ? 0 : index === "right" ? 1 : index;
+    if (
+      typeof idx !== "number" ||
+      !Number.isInteger(idx) ||
+      idx < 0 ||
+      idx >= gamepadAxes.length / 2
+    ) {
       throw new Error(`Stick index out of bounds: ${index}`);
     }
-    gamepadAxes[index * 2] = clamp(x, -1, 1);
-    gamepadAxes[index * 2 + 1] = clamp(y, -1, 1);
+    return idx;
+  }
+
+  function setStick(
+    index: number | "left" | "right",
+    x: number,
+    y: number,
+  ): void {
+    const idx = resolveStickIndex(index);
+    gamepadAxes[idx * 2] = clamp(x, -1, 1);
+    gamepadAxes[idx * 2 + 1] = clamp(y, -1, 1);
     updateGamepad();
   }
 
@@ -202,17 +217,15 @@ export function createGamepadController(
   }
 
   async function pulseStick(
-    index: number,
+    index: number | "left" | "right",
     x: number,
     y: number,
     holdMs = 150,
     settleMs = 160,
   ): Promise<void> {
-    if (index < 0 || index >= gamepadAxes.length / 2) {
-      throw new Error(`Stick index out of bounds: ${index}`);
-    }
+    const idx = resolveStickIndex(index);
     try {
-      setStick(index, x, y);
+      setStick(idx, x, y);
       await sleep(holdMs);
     } finally {
       setStick(index, 0, 0);

@@ -105,12 +105,17 @@
         targetWindow.setTimeout(resolve, ms);
       });
     }
-    function setStick(index, x, y) {
-      if (index < 0 || index >= gamepadAxes.length / 2) {
+    function resolveStickIndex(index) {
+      const idx = index === "left" ? 0 : index === "right" ? 1 : index;
+      if (typeof idx !== "number" || !Number.isInteger(idx) || idx < 0 || idx >= gamepadAxes.length / 2) {
         throw new Error(`Stick index out of bounds: ${index}`);
       }
-      gamepadAxes[index * 2] = clamp(x, -1, 1);
-      gamepadAxes[index * 2 + 1] = clamp(y, -1, 1);
+      return idx;
+    }
+    function setStick(index, x, y) {
+      const idx = resolveStickIndex(index);
+      gamepadAxes[idx * 2] = clamp(x, -1, 1);
+      gamepadAxes[idx * 2 + 1] = clamp(y, -1, 1);
       updateGamepad();
     }
     function setButton(index, value) {
@@ -131,11 +136,9 @@
       await sleep(settleMs);
     }
     async function pulseStick(index, x, y, holdMs = 150, settleMs = 160) {
-      if (index < 0 || index >= gamepadAxes.length / 2) {
-        throw new Error(`Stick index out of bounds: ${index}`);
-      }
+      const idx = resolveStickIndex(index);
       try {
-        setStick(index, x, y);
+        setStick(idx, x, y);
         await sleep(holdMs);
       } finally {
         setStick(index, 0, 0);
