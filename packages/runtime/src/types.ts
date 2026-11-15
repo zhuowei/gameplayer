@@ -178,3 +178,29 @@ export interface ChunkHistoryEntry {
   stuckDetected: boolean;
   ok: boolean;
 }
+
+export interface GtavRadarReading {
+  radarVisible: boolean;
+  healthPct: number;
+  lowHealth: boolean;
+  enemyPixels: number;
+  enemiesAhead: number;
+  enemiesLeft: number;
+  enemiesRight: number;
+  enemiesBehind: number;
+  closestEnemyDist: number | null;
+}
+
+export interface AutoCombatSweepOptions extends ChunkOptions {
+  aimButton?: number;
+  fireButton?: number;
+  coverButton?: number;
+  enterCover?: boolean;
+  maxDurationMs?: number;
+  maxCycles?: number;
+  aimSettleMs?: number;
+  burstMs?: number;
+  duckMs?: number;
+  special?: boolean;
+  autoSpecialOnLowHealth?: boolean;
+}

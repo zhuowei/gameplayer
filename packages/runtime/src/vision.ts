@@ -1,4 +1,4 @@
-import type { CropRegion, FrameSample } from "./types";
+import type { CropRegion, FrameSample, GtavRadarReading } from "./types";
 
 export interface RoadColorModel {
   r: number;
@@ -1420,6 +1420,117 @@ export function detectRaceFinished(
   return outerDiff >= 0.08;
 }
 
+export function analyzeGtavRadarRgba(
+  rgba: Uint8ClampedArray,
+  cw: number,
+  ch: number,
+): GtavRadarReading {
+  if (cw < 16 || ch < 16 || rgba.length < cw * ch * 4) {
+    return {
+      radarVisible: false,
+      healthPct: 0,
+      lowHealth: false,
+      enemyPixels: 0,
+      enemiesAhead: 0,
+      enemiesLeft: 0,
+      enemiesRight: 0,
+      enemiesBehind: 0,
+      closestEnemyDist: null,
+    };
+  }
+
+  // Crop represents bottom-left [0..0.20, 0.76..1.0] of the 16:9 frame
+  const rx0 = Math.floor(cw * 0.075);
+  const rx1 = Math.min(cw, Math.ceil(cw * 0.78));
+  const ry0 = Math.floor(ch * 0.1875);
+  const ry1 = Math.min(ch, Math.ceil(ch * 0.842));
+  const px = cw * 0.428;
+  const py = ch * 0.65;
+
+  let totalRadar = 0;
+  let nonBlackRadar = 0;
+  let redWash = 0;
+  let enemyPixels = 0;
+  let enemiesAhead = 0;
+  let enemiesLeft = 0;
+  let enemiesRight = 0;
+  let enemiesBehind = 0;
+  let minDist = Infinity;
+
+  for (let y = ry0; y < ry1; y++) {
+    for (let x = rx0; x < rx1; x++) {
+      const idx = (y * cw + x) * 4;
+      const r = rgba[idx] ?? 0;
+      const g = rgba[idx + 1] ?? 0;
+      const b = rgba[idx + 2] ?? 0;
+      totalRadar++;
+      if (r + g + b > 45) nonBlackRadar++;
+      if (r > 135 && r > g + 35 && r > b + 35) redWash++;
+      if (r > 165 && g < 85 && b < 85) {
+        enemyPixels++;
+        const dx = x - px;
+        const dy = y - py;
+        const dist = Math.hypot(dx, dy) / cw;
+        if (dist < minDist) minDist = dist;
+        if (dy <= 0 && Math.abs(dx) <= Math.abs(dy) * 1.15) {
+          enemiesAhead++;
+        } else if (dy > Math.abs(dx) * 1.15) {
+          enemiesBehind++;
+        } else if (dx < 0) {
+          enemiesLeft++;
+        } else {
+          enemiesRight++;
+        }
+      }
+    }
+  }
+
+  // Health bar strip at bottom-left of radar
+  const hx0 = Math.floor(cw * 0.075);
+  const hx1 = Math.min(cw, Math.ceil(cw * 0.42));
+  const hy0 = Math.floor(ch * 0.86);
+  const hy1 = Math.min(ch, Math.ceil(ch * 0.94));
+  let barCols = 0;
+  let greenCols = 0;
+  let redBarCols = 0;
+  for (let x = hx0; x < hx1; x++) {
+    let hasGreen = false;
+    let hasRed = false;
+    for (let y = hy0; y < hy1; y++) {
+      const idx = (y * cw + x) * 4;
+      const r = rgba[idx] ?? 0;
+      const g = rgba[idx + 1] ?? 0;
+      const b = rgba[idx + 2] ?? 0;
+      if (g > 105 && g > r + 18 && g > b + 15) hasGreen = true;
+      if (r > 135 && r > g + 35 && r > b + 30) hasRed = true;
+    }
+    barCols++;
+    if (hasGreen) greenCols++;
+    if (hasRed) redBarCols++;
+  }
+
+  const radarVisible = totalRadar > 0 && nonBlackRadar / totalRadar > 0.2;
+  const healthPct = barCols > 0 ? greenCols / barCols : 0;
+  const redWashRatio = totalRadar > 0 ? redWash / totalRadar : 0;
+  const lowHealth =
+    radarVisible &&
+    (healthPct < 0.35 ||
+      (barCols > 0 && redBarCols / barCols > 0.25) ||
+      redWashRatio > 0.25);
+
+  return {
+    radarVisible,
+    healthPct,
+    lowHealth,
+    enemyPixels,
+    enemiesAhead,
+    enemiesLeft,
+    enemiesRight,
+    enemiesBehind,
+    closestEnemyDist: Number.isFinite(minDist) ? minDist : null,
+  };
+}
+
 export class VideoCaptureEngine {
   private analysisCanvas: HTMLCanvasElement;
   private analysisCtx: CanvasRenderingContext2D;
@@ -1571,6 +1682,27 @@ export class VideoCaptureEngine {
     if (!ctx) return null;
     ctx.drawImage(surface, 0, 0, w, h);
     return snap;
+  }
+
+  readGtavRadar(surface: HTMLCanvasElement | HTMLVideoElement): GtavRadarReading {
+    const { w, h } = this.getSurfaceDimensions(surface);
+    if (w <= 0 || h <= 0) {
+      return analyzeGtavRadarRgba(new Uint8ClampedArray(0), 0, 0);
+    }
+    const cw = 128;
+    const ch = 96;
+    const sx = 0;
+    const sy = Math.floor(h * 0.76);
+    const sw = Math.max(16, Math.floor(w * 0.20));
+    const sh = Math.max(16, h - sy);
+    const canvas = document.createElement("canvas");
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return analyzeGtavRadarRgba(new Uint8ClampedArray(0), 0, 0);
+    ctx.drawImage(surface, sx, sy, sw, sh, 0, 0, cw, ch);
+    const img = ctx.getImageData(0, 0, cw, ch);
+    return analyzeGtavRadarRgba(img.data, cw, ch);
   }
 
   captureTile(

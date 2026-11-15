@@ -5,12 +5,14 @@ import {
   type DepthEngineStatus,
 } from "./depth";
 import type {
+  AutoCombatSweepOptions,
   ChunkHistoryEntry,
   ChunkOptions,
   ChunkResult,
   CoverPeekBurstOptions,
   DriveServoOptions,
   FrameSample,
+  GtavRadarReading,
   SprintMoveOptions,
 } from "./types";
 import {
@@ -69,6 +71,8 @@ export interface GameplayOrchestrator {
   smartRescue(options?: ChunkOptions): Promise<ChunkResult>;
   coverPeekBurst(options?: CoverPeekBurstOptions): Promise<ChunkResult>;
   sprintMove(options?: SprintMoveOptions): Promise<ChunkResult>;
+  autoCombatSweep(options?: AutoCombatSweepOptions): Promise<ChunkResult>;
+  readGtavRadar(): GtavRadarReading | null;
   getRecentHistory(): ChunkHistoryEntry[];
   hideOverlay(): void;
   resetRoadModel(): void;
@@ -1013,12 +1017,108 @@ export function createGameplayOrchestrator(
     };
   }
 
+  function readGtavRadar(): GtavRadarReading | null {
+    const eng = getEngine();
+    const surface = eng.findVideoSurface();
+    if (!surface || typeof eng.readGtavRadar !== "function") return null;
+    return eng.readGtavRadar(surface);
+  }
+
+  /**
+   * Closed-loop GTA V combat sweep: checks minimap radar + health at each
+   * cycle, fires LT+RT bursts from cover, ducks between bursts, and triggers
+   * L3+R3 Special or aborts safely into cover if health drops.
+   */
+  async function autoCombatSweep(
+    options: AutoCombatSweepOptions = {},
+  ): Promise<ChunkResult> {
+    const {
+      aimButton = BTN.LT,
+      fireButton = BTN.RT,
+      coverButton = BTN.RB,
+      enterCover = false,
+      maxDurationMs = 3500,
+      maxCycles = 4,
+      aimSettleMs = 160,
+      burstMs = 220,
+      duckMs = 180,
+      special = false,
+      autoSpecialOnLowHealth = true,
+      unpause = false,
+      pause = false,
+      stopOnStuck = false,
+      label = "combat-sweep",
+      ...rest
+    } = options;
+
+    return runChunk(
+      async ({ api, shouldAbort }) => {
+        const eng = getEngine();
+        const surface = eng.findVideoSurface();
+        let specialUsed = false;
+        const startAt = performance.now();
+
+        const triggerSpecial = async () => {
+          specialUsed = true;
+          api.setButton(BTN.L3, 1);
+          api.setButton(BTN.R3, 1);
+          await api.sleep(90);
+          api.setButton(BTN.L3, 0);
+          api.setButton(BTN.R3, 0);
+          await api.sleep(60);
+        };
+
+        if (special) {
+          await triggerSpecial();
+        }
+        if (enterCover) {
+          await api.tapButton(coverButton, 80, 120);
+        }
+
+        for (let i = 0; i < maxCycles && !shouldAbort(); i++) {
+          if (performance.now() - startAt >= maxDurationMs) break;
+          const radar =
+            surface && typeof eng.readGtavRadar === "function"
+              ? eng.readGtavRadar(surface)
+              : null;
+          if (radar && radar.lowHealth) {
+            if (autoSpecialOnLowHealth && !specialUsed) {
+              await triggerSpecial();
+            } else {
+              break;
+            }
+          }
+          api.setButton(aimButton, 1);
+          await api.sleep(aimSettleMs);
+          api.setButton(fireButton, 1);
+          await api.sleep(burstMs);
+          api.setButton(fireButton, 0);
+          api.setButton(aimButton, 0);
+          if (i + 1 < maxCycles && duckMs > 0) {
+            await api.sleep(duckMs);
+          }
+        }
+        api.setButton(fireButton, 0);
+        api.setButton(aimButton, 0);
+      },
+      {
+        ...rest,
+        unpause,
+        pause,
+        stopOnStuck,
+        label,
+      },
+    );
+  }
+
   return {
     runChunk,
     driveServo,
     smartRescue,
     coverPeekBurst,
     sprintMove,
+    autoCombatSweep,
+    readGtavRadar,
     getRecentHistory,
     hideOverlay: hideSheetOverlay,
     resetRoadModel,

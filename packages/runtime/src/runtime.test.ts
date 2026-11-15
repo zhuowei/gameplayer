@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { BTN, createGamepadController } from "./gamepad";
 import {
+  analyzeGtavRadarRgba,
   analyzeMinimapRgba,
   analyzeRgbaFrame,
   createInitialRoadModel,
@@ -1346,5 +1347,60 @@ describe("vision & PID servo", () => {
     expect(history.length).toBe(2);
     expect(history[0]?.label).toBe("test-peek");
     expect(history[1]?.label).toBe("test-sprint");
+  });
+
+  test("analyzeGtavRadarRgba detects green health, low-health alert, and directional enemy blips", () => {
+    const cw = 128;
+    const ch = 96;
+    const rgba = new Uint8ClampedArray(cw * ch * 4);
+    // Fill grey radar interior
+    for (let y = 18; y < 80; y++) {
+      for (let x = 10; x < 98; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 70;
+        rgba[idx + 1] = 75;
+        rgba[idx + 2] = 80;
+        rgba[idx + 3] = 255;
+      }
+    }
+    // Fill green health bar at [10..53, 83..89]
+    for (let y = 83; y < 89; y++) {
+      for (let x = 10; x < 53; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 60;
+        rgba[idx + 1] = 175;
+        rgba[idx + 2] = 70;
+        rgba[idx + 3] = 255;
+      }
+    }
+    // Place red enemy blip ahead of player (px ~ 55, py ~ 62)
+    for (let y = 38; y < 42; y++) {
+      for (let x = 53; x < 57; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 220;
+        rgba[idx + 1] = 30;
+        rgba[idx + 2] = 30;
+        rgba[idx + 3] = 255;
+      }
+    }
+    const healthy = analyzeGtavRadarRgba(rgba, cw, ch);
+    expect(healthy.radarVisible).toBe(true);
+    expect(healthy.healthPct).toBeGreaterThan(0.8);
+    expect(healthy.lowHealth).toBe(false);
+    expect(healthy.enemiesAhead).toBeGreaterThan(0);
+
+    // Replace health bar with red low-health bar
+    for (let y = 83; y < 89; y++) {
+      for (let x = 10; x < 53; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 210;
+        rgba[idx + 1] = 35;
+        rgba[idx + 2] = 35;
+        rgba[idx + 3] = 255;
+      }
+    }
+    const low = analyzeGtavRadarRgba(rgba, cw, ch);
+    expect(low.lowHealth).toBe(true);
+    expect(low.healthPct).toBeLessThan(0.1);
   });
 });

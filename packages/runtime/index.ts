@@ -23,6 +23,8 @@ const gameplayApi = {
   smartRescue: orchestrator.smartRescue,
   coverPeekBurst: orchestrator.coverPeekBurst,
   sprintMove: orchestrator.sprintMove,
+  autoCombatSweep: orchestrator.autoCombatSweep,
+  readGtavRadar: orchestrator.readGtavRadar,
   getRecentHistory: orchestrator.getRecentHistory,
   hideOverlay: hideSheetOverlay,
   resetRoadModel: orchestrator.resetRoadModel,
