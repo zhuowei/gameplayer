@@ -5,6 +5,7 @@ import {
   type DepthEngineStatus,
 } from "./depth";
 import type {
+  ActivateSpecialOptions,
   AutoCombatSweepOptions,
   ChunkHistoryEntry,
   ChunkOptions,
@@ -973,12 +974,7 @@ export function createGameplayOrchestrator(
 
         const triggerSpecial = async () => {
           specialUsed = true;
-          api.setButton(BTN.L3, 1);
-          api.setButton(BTN.R3, 1);
-          await api.sleep(90);
-          api.setButton(BTN.L3, 0);
-          api.setButton(BTN.R3, 0);
-          await api.sleep(40);
+          await pressSpecialButtons(api, 90, 40);
         };
 
         if (special) {
@@ -1076,6 +1072,34 @@ export function createGameplayOrchestrator(
   }
 
   /**
+   * Press L3+R3 simultaneously to toggle the active protagonist's Special Ability
+   * (Trevor rage/damage reduction, Michael slow-mo, Franklin driving focus).
+   */
+  async function pressSpecialButtons(
+    api: Pick<GamepadController, "setButton" | "sleep">,
+    holdMs = 90,
+    settleMs = 60,
+  ) {
+    api.setButton(BTN.L3, 1);
+    api.setButton(BTN.R3, 1);
+    await api.sleep(holdMs);
+    api.setButton(BTN.L3, 0);
+    api.setButton(BTN.R3, 0);
+    if (settleMs > 0) {
+      await api.sleep(settleMs);
+    }
+  }
+
+  /**
+   * Trigger the active character's Special Ability (L3+R3) and return updated radar telemetry.
+   */
+  async function activateSpecial(options: ActivateSpecialOptions = {}) {
+    const { holdMs = 90, settleMs = 60 } = options;
+    await pressSpecialButtons(gamepad, holdMs, settleMs);
+    return readGtavRadar();
+  }
+
+  /**
    * Closed-loop GTA V combat sweep: checks minimap radar + health at each
    * cycle, fires LT+RT bursts from cover, ducks between bursts, and triggers
    * L3+R3 Special or aborts safely into cover if health drops.
@@ -1121,12 +1145,7 @@ export function createGameplayOrchestrator(
 
         const triggerSpecial = async () => {
           specialUsed = true;
-          api.setButton(BTN.L3, 1);
-          api.setButton(BTN.R3, 1);
-          await api.sleep(90);
-          api.setButton(BTN.L3, 0);
-          api.setButton(BTN.R3, 0);
-          await api.sleep(60);
+          await pressSpecialButtons(api, 90, 60);
         };
 
         if (special) {
@@ -1212,6 +1231,7 @@ export function createGameplayOrchestrator(
           api.setButton(aimButton, 1);
           await api.sleep(aimSettleMs);
           let allowFire = true;
+          let abortedLowHealth = false;
           if (verifyReticle && surface && typeof eng.readGtavReticle === "function") {
             let ret = eng.readGtavReticle(surface);
             if (ret.state !== "enemy" && reticleScanMs > 0) {
@@ -1220,6 +1240,7 @@ export function createGameplayOrchestrator(
                   ? Math.sign(radar.enemyAngleDeg)
                   : -1;
               const scanStart = performance.now();
+              let lastHealthCheck = scanStart;
               const switchAt = Math.floor(reticleScanMs * 0.65);
               const nextFrame = () =>
                 typeof requestAnimationFrame === "function"
@@ -1229,7 +1250,16 @@ export function createGameplayOrchestrator(
                 performance.now() - scanStart < reticleScanMs &&
                 !shouldAbort()
               ) {
-                const elapsed = performance.now() - scanStart;
+                const now = performance.now();
+                if (now - lastHealthCheck >= 120 && typeof eng.readGtavRadar === "function") {
+                  lastHealthCheck = now;
+                  const rMid = eng.readGtavRadar(surface);
+                  if (rMid && rMid.lowHealth) {
+                    abortedLowHealth = true;
+                    break;
+                  }
+                }
+                const elapsed = now - scanStart;
                 const dir = elapsed < switchAt ? initSign : -initSign;
                 api.setStick(1, dir * 0.45, 0);
                 await nextFrame();
@@ -1239,11 +1269,20 @@ export function createGameplayOrchestrator(
               api.setStick(1, 0, 0);
             }
             if (
+              abortedLowHealth ||
               ret.state === "friendly" ||
               (requireEnemyReticle && ret.state !== "enemy")
             ) {
               allowFire = false;
             }
+          }
+          if (abortedLowHealth) {
+            api.setButton(aimButton, 0);
+            if (autoSpecialOnLowHealth && !specialUsed) {
+              await triggerSpecial();
+              continue;
+            }
+            break;
           }
           if (allowFire) {
             api.setButton(fireButton, 1);
@@ -1314,12 +1353,7 @@ export function createGameplayOrchestrator(
 
         const triggerSpecial = async () => {
           specialUsed = true;
-          api.setButton(BTN.L3, 1);
-          api.setButton(BTN.R3, 1);
-          await api.sleep(90);
-          api.setButton(BTN.L3, 0);
-          api.setButton(BTN.R3, 0);
-          await api.sleep(40);
+          await pressSpecialButtons(api, 90, 40);
         };
 
         while (!shouldAbort()) {
@@ -1575,6 +1609,7 @@ export function createGameplayOrchestrator(
     sprintMove,
     navigateToObjective,
     autoCombatSweep,
+    activateSpecial,
     switchCharacter,
     waitForRadar,
     retryMission,

@@ -3028,12 +3028,7 @@ self.onmessage = async (ev) => {
         let specialUsed = false;
         const triggerSpecial = async () => {
           specialUsed = true;
-          api.setButton(BTN.L3, 1);
-          api.setButton(BTN.R3, 1);
-          await api.sleep(90);
-          api.setButton(BTN.L3, 0);
-          api.setButton(BTN.R3, 0);
-          await api.sleep(40);
+          await pressSpecialButtons(api, 90, 40);
         };
         if (special) {
           await triggerSpecial();
@@ -3125,6 +3120,21 @@ self.onmessage = async (ev) => {
         return null;
       return eng.readGtavReticle(surface);
     }
+    async function pressSpecialButtons(api, holdMs = 90, settleMs = 60) {
+      api.setButton(BTN.L3, 1);
+      api.setButton(BTN.R3, 1);
+      await api.sleep(holdMs);
+      api.setButton(BTN.L3, 0);
+      api.setButton(BTN.R3, 0);
+      if (settleMs > 0) {
+        await api.sleep(settleMs);
+      }
+    }
+    async function activateSpecial(options = {}) {
+      const { holdMs = 90, settleMs = 60 } = options;
+      await pressSpecialButtons(gamepad, holdMs, settleMs);
+      return readGtavRadar();
+    }
     async function autoCombatSweep(options = {}) {
       const {
         aimButton = BTN.LT,
@@ -3161,12 +3171,7 @@ self.onmessage = async (ev) => {
         const startAt = performance.now();
         const triggerSpecial = async () => {
           specialUsed = true;
-          api.setButton(BTN.L3, 1);
-          api.setButton(BTN.R3, 1);
-          await api.sleep(90);
-          api.setButton(BTN.L3, 0);
-          api.setButton(BTN.R3, 0);
-          await api.sleep(60);
+          await pressSpecialButtons(api, 90, 60);
         };
         if (special) {
           await triggerSpecial();
@@ -3224,15 +3229,26 @@ self.onmessage = async (ev) => {
           api.setButton(aimButton, 1);
           await api.sleep(aimSettleMs);
           let allowFire = true;
+          let abortedLowHealth = false;
           if (verifyReticle && surface && typeof eng.readGtavReticle === "function") {
             let ret = eng.readGtavReticle(surface);
             if (ret.state !== "enemy" && reticleScanMs > 0) {
               const initSign = radar && radar.enemyAngleDeg !== null && radar.enemyAngleDeg !== 0 ? Math.sign(radar.enemyAngleDeg) : -1;
               const scanStart = performance.now();
+              let lastHealthCheck = scanStart;
               const switchAt = Math.floor(reticleScanMs * 0.65);
               const nextFrame = () => typeof requestAnimationFrame === "function" ? new Promise((r) => requestAnimationFrame(() => r())) : api.sleep(16);
               while (performance.now() - scanStart < reticleScanMs && !shouldAbort()) {
-                const elapsed = performance.now() - scanStart;
+                const now = performance.now();
+                if (now - lastHealthCheck >= 120 && typeof eng.readGtavRadar === "function") {
+                  lastHealthCheck = now;
+                  const rMid = eng.readGtavRadar(surface);
+                  if (rMid && rMid.lowHealth) {
+                    abortedLowHealth = true;
+                    break;
+                  }
+                }
+                const elapsed = now - scanStart;
                 const dir = elapsed < switchAt ? initSign : -initSign;
                 api.setStick(1, dir * 0.45, 0);
                 await nextFrame();
@@ -3242,9 +3258,17 @@ self.onmessage = async (ev) => {
               }
               api.setStick(1, 0, 0);
             }
-            if (ret.state === "friendly" || requireEnemyReticle && ret.state !== "enemy") {
+            if (abortedLowHealth || ret.state === "friendly" || requireEnemyReticle && ret.state !== "enemy") {
               allowFire = false;
             }
+          }
+          if (abortedLowHealth) {
+            api.setButton(aimButton, 0);
+            if (autoSpecialOnLowHealth && !specialUsed) {
+              await triggerSpecial();
+              continue;
+            }
+            break;
           }
           if (allowFire) {
             api.setButton(fireButton, 1);
@@ -3301,12 +3325,7 @@ self.onmessage = async (ev) => {
         const startAt = performance.now();
         const triggerSpecial = async () => {
           specialUsed = true;
-          api.setButton(BTN.L3, 1);
-          api.setButton(BTN.R3, 1);
-          await api.sleep(90);
-          api.setButton(BTN.L3, 0);
-          api.setButton(BTN.R3, 0);
-          await api.sleep(40);
+          await pressSpecialButtons(api, 90, 40);
         };
         while (!shouldAbort()) {
           const now = performance.now();
@@ -3497,6 +3516,7 @@ self.onmessage = async (ev) => {
       sprintMove,
       navigateToObjective,
       autoCombatSweep,
+      activateSpecial,
       switchCharacter,
       waitForRadar,
       retryMission,
@@ -3535,6 +3555,7 @@ self.onmessage = async (ev) => {
     sprintMove: orchestrator.sprintMove,
     navigateToObjective: orchestrator.navigateToObjective,
     autoCombatSweep: orchestrator.autoCombatSweep,
+    activateSpecial: orchestrator.activateSpecial,
     switchCharacter: orchestrator.switchCharacter,
     readGtavRadar: orchestrator.readGtavRadar,
     readGtavReticle: orchestrator.readGtavReticle,

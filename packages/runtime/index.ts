@@ -26,6 +26,7 @@ const gameplayApi = {
   sprintMove: orchestrator.sprintMove,
   navigateToObjective: orchestrator.navigateToObjective,
   autoCombatSweep: orchestrator.autoCombatSweep,
+  activateSpecial: orchestrator.activateSpecial,
   switchCharacter: orchestrator.switchCharacter,
   readGtavRadar: orchestrator.readGtavRadar,
   readGtavReticle: orchestrator.readGtavReticle,

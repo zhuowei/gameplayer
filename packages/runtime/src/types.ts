@@ -272,3 +272,8 @@ export interface RetryMissionOptions {
   pollMs?: number;
   settleMs?: number;
 }
+
+export interface ActivateSpecialOptions {
+  holdMs?: number;
+  settleMs?: number;
+}

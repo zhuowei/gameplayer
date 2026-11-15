@@ -1810,4 +1810,88 @@ describe("vision & PID servo", () => {
     });
     expect(friendlyFires.length).toBe(0);
   });
+
+  test("activateSpecial presses L3+R3 and autoCombatSweep aborts peek on mid-scan lowHealth", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv("complete");
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+    const events: string[] = [];
+    const origSetBtn = gp.setButton;
+    gp.setButton = (btn: number, val: number) => {
+      origSetBtn(btn, val);
+      events.push(`${btn}:${val}`);
+    };
+    let radarCalls = 0;
+    const orch = createGameplayOrchestrator(gp, {
+      resetTracking() {},
+      findVideoSurface: () => ({}) as HTMLVideoElement,
+      getSurfaceDimensions: () => ({ w: 64, h: 48 }),
+      captureTile: () => ({
+        elapsedMs: 0,
+        canvas: {} as HTMLCanvasElement,
+        axes: [0, 0, 0, 0],
+        buttons: [],
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+      }),
+      sampleAnalysis: () => ({
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadCurvature: 0,
+        roadConfidence: 0.8,
+      }),
+      readGtavRadar: () => {
+        radarCalls++;
+        // First check healthy, mid-peek check drops to lowHealth
+        const low = radarCalls >= 2;
+        return {
+          radarVisible: true,
+          healthPct: low ? 0.25 : 0.9,
+          lowHealth: low,
+          enemyPixels: 10,
+          enemiesAhead: 5,
+          enemiesLeft: 0,
+          enemiesRight: 0,
+          enemiesBehind: 0,
+          closestEnemyDist: 0.4,
+          enemyAngleDeg: 0,
+          objectiveVisible: false,
+          objectiveColor: "none" as const,
+          objectiveAngleDeg: null,
+          objectiveDist: null,
+          objectivePixels: 0,
+          gpsSteerBias: 0,
+        };
+      },
+      readGtavReticle: () => ({
+        state: "neutral" as const,
+        redPixels: 0,
+        greenPixels: 0,
+        whitePixels: 4,
+      }),
+    });
+    const radarAfter = await orch.activateSpecial({ holdMs: 10, settleMs: 10 });
+    expect(radarAfter?.radarVisible).toBe(true);
+    expect(events).toContain(`${BTN.L3}:1`);
+    expect(events).toContain(`${BTN.R3}:1`);
+    expect(events).toContain(`${BTN.L3}:0`);
+    expect(events).toContain(`${BTN.R3}:0`);
+
+    events.length = 0;
+    radarCalls = 0;
+    await orch.autoCombatSweep({
+      maxCycles: 1,
+      autoPan: false,
+      verifyReticle: true,
+      reticleScanMs: 260,
+      aimSettleMs: 10,
+      burstMs: 20,
+      autoSpecialOnLowHealth: false,
+      showSheetOverlay: false,
+    });
+    expect(events).toContain(`${BTN.LT}:0`);
+    expect(events).not.toContain(`${BTN.RT}:1`);
+  });
 });
