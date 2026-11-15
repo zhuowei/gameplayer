@@ -23,7 +23,7 @@ Empirical notes and control bindings for playing unmodified *Grand Theft Auto V*
 
 1. **Never call `driveServo()` with default `gasButton` in GTA V**:
    - `driveServo()` defaults `gasButton` to `BTN.Y` (SuperTuxKart's accelerate button), which **jumps out of the vehicle** in GTA V.
-   - Always pass `{ gasButton: window.gameplayApi.BTN.RT, unpause: false, pause: false, stopOnRaceFinish: false }` if using `driveServo()`, or drive with `runChunk(..., { unpause: false, pause: false })` holding `BTN.RT`.
+   - Always use `window.gameplayApi.gtavDrive(options)` (which wraps `driveServo()` with `{ gasButton: BTN.RT, unpause: false, pause: false, stopOnRaceFinish: false }`), or pass those explicit flags if calling `driveServo()` directly.
 2. **Tight-Timer Combat & QTEs (e.g., Prologue Hostage Shot)**:
    - Turn-by-turn `runChunk` -> `take_screenshot` -> `read_file` -> LLM round-trips add ~5–10s per step, exceeding short hostage/QTE windows.
    - Combine `LT` (`BTN.LT = 6`) aim/snap + calibrated Right Stick nudge + `RT` (`BTN.RT = 7`) burst inside a **single `runChunk`** without intermediate screenshot round-trips.
@@ -38,3 +38,23 @@ Empirical notes and control bindings for playing unmodified *Grand Theft Auto V*
      3. Use `BTN.L3` (`10`) + `BTN.R3` (`11`) together for Trevor's Special Ability (temporary damage reduction) when crossing open ground.
 6. **Geometry Snags & Ally-Blip Orientation**:
    - Narrow doorways, guard booths, and fence posts can snag forward movement (`Left Stick y: -1`). If `motionScore` drops or the character hugs a wall/post, rotate the camera (`Right Stick` `x`) toward the road or blue ally blips on the minimap before sprinting (`BTN.A` + `Left Stick y: -1`).
+
+## 3. Closed-Loop GTA V Runtime Helpers (`window.gameplayApi`)
+
+Always prefer these in-page closed-loop helpers (added in `2b71837`, `44b2e74`, `18fbd6d`, and `513e8a1`) over open-loop `setStick`/`sleep` sequences so the character reacts within `<200ms` and never sits exposed during LLM turn gaps:
+
+1. **`window.gameplayApi.readGtavRadar()`**:
+   - Crops the bottom-left minimap (`[0..0.20, 0.76..1.0]` at `128×96`) and returns `{ radarVisible, healthPct, lowHealth, enemyPixels, enemiesAhead, enemiesLeft, enemiesRight, enemiesBehind, closestEnemyDist }`.
+   - Call before sprinting out of cover so flanking cops (`enemiesLeft` / `enemiesRight`) are cleared first.
+2. **`window.gameplayApi.autoCombatSweep(options?)`**:
+   - Closed-loop multi-cycle cover peek-fire (`LT` lock-on + `RT` burst + duck pause) with `maxCycles`, `maxDurationMs`, `aimSettleMs`, `burstMs`, `duckMs`, `enterCover`, `special`, `autoSpecialOnLowHealth`, `autoPan`, and `panMs`.
+   - Checks `readGtavRadar()` before each burst: if `enemiesAhead === 0` and `autoPan: true` (default), pans `Right Stick` (`panMs: 180` default) toward `enemiesLeft` / `enemiesRight` / `enemiesBehind` before pressing `LT`; triggers `L3 + R3` Special on `lowHealth` (or aborts into cover), and always releases `LT`/`RT` before returning so the character stays safely behind cover while the LLM inspects the screenshot.
+3. **`window.gameplayApi.sprintMove(options?)`**:
+   - Pre-move camera yaw (`yawX`, `yawY`, `yawMs`) + `BTN.A` sprint (`moveX`, `moveY`, `durationMs`) with `shouldAbort()` wall-snag early stop and optional `endCover: true` (`RB` snap at destination).
+   - Supports `special: true` (`L3 + R3` before sprinting) and checks `readGtavRadar()` every `150ms` mid-sprint (`abortOnLowHealth: true`, `autoSpecialOnLowHealth: true` by default): if health drops to red mid-sprint, triggers Rage (`L3+R3`) if unused or aborts early and snaps into cover (`RB`).
+4. **`window.gameplayApi.coverPeekBurst(options?)`**:
+   - Single-exchange cover-safe `LT` aim + optional Right Stick nudge (`aimX`, `aimY`, `aimNudgeMs`) + `RT` bursts + optional `special: true`, guaranteed to release `LT` and `RT` before returning.
+5. **`window.gameplayApi.gtavDrive(options?)`**:
+   - Safe GTA V vehicle wrapper around `driveServo()` defaulting `{ gasButton: BTN.RT, unpause: false, pause: false, stopOnRaceFinish: false }` so `BTN.Y` (exit vehicle) is never pressed.
+6. **`window.gameplayApi.getRecentHistory()`**:
+   - Returns the last 12 chunk telemetry entries (`timestamp`, `label`, `stopReason`, `durationMs`, `avgMotion`, `stuckDetected`, `ok`) for quick post-mortem checks without video encoding.

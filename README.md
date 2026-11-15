@@ -16,11 +16,11 @@ Driving a 30–60 Hz continuous game directly through a 0.1 Hz turn-based LLM to
 3. **[packages/browsertool](packages/browsertool/README.md)**
    - Zero-dependency Bun CLI speaking raw Chrome DevTools Protocol (`ws://127.0.0.1:9222`) for environments outside network-isolated sandboxes (inside Antigravity's sandbox, use the native `chrome-devtools` MCP server instead).
 4. **[skills/gameplay](skills/gameplay/SKILL.md) (Registered via [.agents/skills.json](.agents/skills.json))**
-   - Progressive-disclosure agent skill covering runtime `v5.0.1` injection, `bun run perceive` 3D depth/OpenCV integration, zero-shot unseen track protocol, recovery discipline, and the [SuperTuxKart runbook](skills/gameplay/references/supertuxkart.md).
+   - Progressive-disclosure agent skill covering runtime `v5.0.1` injection, `bun run perceive` 3D depth/OpenCV integration, zero-shot unseen track protocol, recovery discipline, the [SuperTuxKart runbook](skills/gameplay/references/supertuxkart.md), and the [GTA V runbook](skills/gameplay/references/gtav.md).
 
 ## Empirical Results
 
-Across seven end-to-end black-box evaluations (six SuperTuxKart runs and one Tier-3 cloud-streaming test on *Fortnite: Save the World*, backed by `32` tests / `185` assertions via `bun test`):
+Across eight end-to-end black-box evaluations (six SuperTuxKart runs, one Tier-3 cloud-streaming test on *Fortnite: Save the World*, and a supervised dual-agent *Grand Theft Auto V* session, backed by `35` tests / `207` assertions via `bun test`):
 
 | Run | Target & Scenario | Stack | Steps / Segments | Outcome & Rescues | Key Finding |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -30,13 +30,14 @@ Across seven end-to-end black-box evaluations (six SuperTuxKart runs and one Tie
 | **Run 5** (`52098352`) | STK *Antediluvian Abyss* (unseen figure-8, 3 AI) | Runtime v4 + `perceive` (10×) + `Hydrogen` | 732 steps / 108 segments | **Finished 4th place**; **6 rescues** (`44m 57s`) | Zero-shot completion in underwater biome; `86%` wall-clock spent in ~20s pause/MCP turns |
 | **Run 6** (`b05c9314`) | STK *Blackhill Mansion* (unseen night cobblestones) | Runtime `v5.0.0` (in-page Depth Worker, `0` `perceive`) | **330 steps (−55%) / 40 segments (−63%)** | ~90–95% lap (`seg-40` Pause stick leak); **8 rescues** (`21m 22s`) | In-page `280×210` Depth Worker eliminated host `perceive` calls; exposed 4 bugs fixed in [`v5.0.1`](docs/lessons-learned.md#e-run-6-zero-shot-evaluation-blackhill-mansion-runtime-v500--runtime-v501-fixes) |
 | **Run 7** (`50539d32`) | *Fortnite: Save the World* (`play.xbox.com`, Tier 3) | Runtime `v5.0.1` + `Hydrogen` (`~16m` active) | 296 steps | Preview UI failed → **Production UI navigated Homebase → Stonewood basement** before AFK kick | Isolated Preview (`⋮⋮`) vs Production (`[Xbox Logo \| ⋮⋮]`) UI; drove prototype fidelity, CSP policy & unpaused `runChunk` ([lessons](docs/lessons-learned.md#f-cross-game-tier-3-evaluation-fortnite-save-the-world-on-xbox-cloud-gaming-50539d32)) |
+| **Run 8** (`eae11737`) | *Grand Theft Auto V* (`MoonlightWeb`, Tier 3) | Supervised dual-agent (`Hydrogen` player + supervisor `.mp4` + hot-injected `v5.0.1`) | `1h 18m` session (`02:29–03:47`) | Cleared Prologue shootout past depot gate (**13 deaths total → 0 deaths in final 18m**) | Supervisor 1 fps `.mp4` review + live hot-injected `readGtavRadar`, `autoCombatSweep`, `sprintMove`, and `gtavDrive` eliminated turn-gap/flank deaths; next bottleneck is on-foot waypoint orientation ([lessons](docs/lessons-learned.md#g-supervised-dual-agent-tier-3-evaluation-grand-theft-auto-v-on-moonlightweb-eae11737)) |
 
-See [docs/lessons-learned.md](docs/lessons-learned.md#b-other-games-video-output--controller-input-only) for the full 3-tier cross-game generalization breakdown and hardware/streaming roadmap.
+See [docs/lessons-learned.md](docs/lessons-learned.md#b-other-games-video-output--controller-input-only) for the full 3-tier cross-game generalization breakdown and [Section 6](docs/lessons-learned.md#6-reusable-supervised-gameplay-prompt-coordinator--player-subagent) for the reusable supervised gameplay prompt.
 
 ## Documentation & Post-Mortems
 
 - **[AGENTS.md](AGENTS.md)**: Always-on workspace rules, sandbox/MCP conventions, and mandatory vision/control testing invariants.
-- **[docs/lessons-learned.md](docs/lessons-learned.md)**: Quantitative comparison across six SuperTuxKart runs (four Tutorial iterations cutting rescues `13 → 2`, Run 5 zero-shot Singleplayer *Antediluvian Abyss* with Runtime v4 + `bun run perceive`, and Run 6 zero-shot *Blackhill Mansion* with Runtime `v5.0.0` → `v5.0.1`), cross-game Tier-3 evaluation (*Fortnite: Save the World* on `play.xbox.com` covering Preview vs. Production UI, CSP-safe `perceive`, and unpaused `runChunk`), step-sizing tradeoffs, why moving 3D depth/minimap odometry into the real-time loop eliminates 86% turn overhead, and foundation-model caveats (NitroGen, SIMA 2).
+- **[docs/lessons-learned.md](docs/lessons-learned.md)**: Quantitative comparison across six SuperTuxKart runs (four Tutorial iterations cutting rescues `13 → 2`, Run 5 zero-shot Singleplayer *Antediluvian Abyss* with Runtime v4 + `bun run perceive`, and Run 6 zero-shot *Blackhill Mansion* with Runtime `v5.0.0` → `v5.0.1`), cross-game Tier-3 evaluations (*Fortnite: Save the World* on `play.xbox.com` and supervised *Grand Theft Auto V* on MoonlightWeb with a reusable dual-agent prompt), step-sizing tradeoffs, why moving 3D depth/minimap odometry into the real-time loop eliminates 86% turn overhead, and foundation-model caveats (NitroGen, SIMA 2).
 
 ## Quick Start
 
