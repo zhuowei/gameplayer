@@ -1489,5 +1489,24 @@ describe("vision & PID servo", () => {
     expect(driveRes.ok).toBe(true);
     expect(seenButtons.some((b) => b.rt > 0)).toBe(true);
     expect(seenButtons.every((b) => b.y === 0)).toBe(true);
+
+    // Verify sprintMove triggers L3+R3 when special:true and cleans up
+    let sawL3R3 = false;
+    const origSetBtn2 = gp.setButton;
+    gp.setButton = (btn: number, val: number) => {
+      origSetBtn2(btn, val);
+      const st = gp.getState();
+      if ((st.buttons[BTN.L3] ?? 0) > 0 && (st.buttons[BTN.R3] ?? 0) > 0) {
+        sawL3R3 = true;
+      }
+    };
+    const rageSprint = await orch.sprintMove({
+      special: true,
+      durationMs: 40,
+      endCover: true,
+      showSheetOverlay: false,
+    });
+    expect(rageSprint.ok).toBe(true);
+    expect(sawL3R3).toBe(true);
   });
 });

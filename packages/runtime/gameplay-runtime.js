@@ -2870,12 +2870,30 @@ self.onmessage = async (ev) => {
         durationMs = 1200,
         endCover = false,
         coverButton = BTN.RB,
+        special = false,
+        autoSpecialOnLowHealth = true,
+        abortOnLowHealth = true,
         unpause = false,
         pause = false,
         label = "sprint-move",
         ...rest
       } = options;
       return runChunk(async ({ api, shouldAbort }) => {
+        const eng = getEngine();
+        const surface = eng.findVideoSurface();
+        let specialUsed = false;
+        const triggerSpecial = async () => {
+          specialUsed = true;
+          api.setButton(BTN.L3, 1);
+          api.setButton(BTN.R3, 1);
+          await api.sleep(90);
+          api.setButton(BTN.L3, 0);
+          api.setButton(BTN.R3, 0);
+          await api.sleep(40);
+        };
+        if (special) {
+          await triggerSpecial();
+        }
         if (yawMs > 0 && (yawX !== 0 || yawY !== 0)) {
           api.setStick(1, yawX, yawY);
           await api.sleep(yawMs);
@@ -2889,6 +2907,16 @@ self.onmessage = async (ev) => {
         const stepMs = 150;
         const steps = Math.max(1, Math.ceil(durationMs / stepMs));
         for (let i = 0;i < steps && !shouldAbort(); i++) {
+          if (abortOnLowHealth && surface && typeof eng.readGtavRadar === "function") {
+            const radar = eng.readGtavRadar(surface);
+            if (radar && radar.lowHealth) {
+              if (autoSpecialOnLowHealth && !specialUsed) {
+                await triggerSpecial();
+              } else {
+                break;
+              }
+            }
+          }
           await api.sleep(Math.min(stepMs, Math.max(50, durationMs - i * stepMs)));
         }
         if (sprint) {

@@ -167,6 +167,9 @@ export interface SprintMoveOptions extends ChunkOptions {
   durationMs?: number;
   endCover?: boolean;
   coverButton?: number;
+  special?: boolean;
+  autoSpecialOnLowHealth?: boolean;
+  abortOnLowHealth?: boolean;
 }
 
 export interface ChunkHistoryEntry {
