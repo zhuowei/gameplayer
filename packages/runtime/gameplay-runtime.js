@@ -2955,6 +2955,7 @@ self.onmessage = async (ev) => {
         unpause = false,
         pause = false,
         stopOnStuck = false,
+        showSheetOverlay: showSheet = false,
         label = "cover-peek",
         ...rest
       } = options;
@@ -2994,6 +2995,7 @@ self.onmessage = async (ev) => {
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label
       });
     }
@@ -3142,6 +3144,7 @@ self.onmessage = async (ev) => {
         unpause = false,
         pause = false,
         stopOnStuck = false,
+        showSheetOverlay: showSheet = false,
         label = "combat-sweep",
         ...rest
       } = options;
@@ -3257,6 +3260,7 @@ self.onmessage = async (ev) => {
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label
       });
     }
@@ -3278,6 +3282,7 @@ self.onmessage = async (ev) => {
         unpause = false,
         pause = false,
         stopOnStuck = false,
+        showSheetOverlay: showSheet = false,
         label = "nav-objective",
         ...rest
       } = options;
@@ -3373,6 +3378,7 @@ self.onmessage = async (ev) => {
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label
       });
       if (customStopReason) {
@@ -3401,6 +3407,7 @@ self.onmessage = async (ev) => {
         unpause: false,
         pause: false,
         stopOnRaceFinish: false,
+        showSheetOverlay: false,
         label: "gtav-drive",
         steerBiasFn: gpsBiasFn,
         ...rest
@@ -3415,6 +3422,7 @@ self.onmessage = async (ev) => {
         unpause = false,
         pause = false,
         stopOnStuck = false,
+        showSheetOverlay: showSheet = false,
         label = "switch-char",
         ...rest
       } = options;
@@ -3434,6 +3442,7 @@ self.onmessage = async (ev) => {
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label
       });
     }

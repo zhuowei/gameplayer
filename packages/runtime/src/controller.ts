@@ -889,6 +889,7 @@ export function createGameplayOrchestrator(
       unpause = false,
       pause = false,
       stopOnStuck = false,
+      showSheetOverlay: showSheet = false,
       label = "cover-peek",
       ...rest
     } = options;
@@ -931,6 +932,7 @@ export function createGameplayOrchestrator(
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label,
       },
     );
@@ -1102,6 +1104,7 @@ export function createGameplayOrchestrator(
       unpause = false,
       pause = false,
       stopOnStuck = false,
+      showSheetOverlay: showSheet = false,
       label = "combat-sweep",
       ...rest
     } = options;
@@ -1257,6 +1260,7 @@ export function createGameplayOrchestrator(
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label,
       },
     );
@@ -1288,6 +1292,7 @@ export function createGameplayOrchestrator(
       unpause = false,
       pause = false,
       stopOnStuck = false,
+      showSheetOverlay: showSheet = false,
       label = "nav-objective",
       ...rest
     } = options;
@@ -1421,6 +1426,7 @@ export function createGameplayOrchestrator(
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label,
       },
     );
@@ -1461,6 +1467,7 @@ export function createGameplayOrchestrator(
       unpause: false,
       pause: false,
       stopOnRaceFinish: false,
+      showSheetOverlay: false,
       label: "gtav-drive",
       steerBiasFn: gpsBiasFn,
       ...rest,
@@ -1478,6 +1485,7 @@ export function createGameplayOrchestrator(
       unpause = false,
       pause = false,
       stopOnStuck = false,
+      showSheetOverlay: showSheet = false,
       label = "switch-char",
       ...rest
     } = options;
@@ -1501,6 +1509,7 @@ export function createGameplayOrchestrator(
         unpause,
         pause,
         stopOnStuck,
+        showSheetOverlay: showSheet,
         label,
       },
     );
