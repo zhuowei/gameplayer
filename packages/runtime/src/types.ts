@@ -203,6 +203,13 @@ export interface GtavRadarReading {
   gpsSteerBias: number;
 }
 
+export interface GtavReticleReading {
+  state: "enemy" | "friendly" | "neutral" | "none";
+  redPixels: number;
+  greenPixels: number;
+  whitePixels: number;
+}
+
 export interface AutoCombatSweepOptions extends ChunkOptions {
   aimButton?: number;
   fireButton?: number;
@@ -218,6 +225,8 @@ export interface AutoCombatSweepOptions extends ChunkOptions {
   autoPan?: boolean;
   panMs?: number;
   panDeadbandDeg?: number;
+  verifyReticle?: boolean;
+  reticleScanMs?: number;
   stopWhenClear?: boolean;
 }
 

@@ -1630,6 +1630,57 @@ export function analyzeGtavRadarRgba(
   };
 }
 
+export function analyzeGtavReticleRgba(
+  rgba: Uint8ClampedArray,
+  cw: number,
+  ch: number,
+): {
+  state: "enemy" | "friendly" | "neutral" | "none";
+  redPixels: number;
+  greenPixels: number;
+  whitePixels: number;
+} {
+  if (cw <= 0 || ch <= 0 || rgba.length < cw * ch * 4) {
+    return { state: "none", redPixels: 0, greenPixels: 0, whitePixels: 0 };
+  }
+  const x0 = Math.floor(cw * 0.3);
+  const x1 = Math.ceil(cw * 0.7);
+  const y0 = Math.floor(ch * 0.3);
+  const y1 = Math.ceil(ch * 0.7);
+  let redPixels = 0;
+  let greenPixels = 0;
+  let whitePixels = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const idx = (y * cw + x) * 4;
+      const r = rgba[idx] ?? 0;
+      const g = rgba[idx + 1] ?? 0;
+      const b = rgba[idx + 2] ?? 0;
+      if (r > 185 && g < 85 && b < 85) {
+        redPixels++;
+      } else if (g > 175 && r < 110 && b < 110) {
+        greenPixels++;
+      } else if (
+        r > 210 &&
+        g > 210 &&
+        b > 210 &&
+        Math.max(r, g, b) - Math.min(r, g, b) < 25
+      ) {
+        whitePixels++;
+      }
+    }
+  }
+  const state =
+    redPixels >= 4
+      ? "enemy"
+      : greenPixels >= 4
+        ? "friendly"
+        : whitePixels >= 3
+          ? "neutral"
+          : "none";
+  return { state, redPixels, greenPixels, whitePixels };
+}
+
 export class VideoCaptureEngine {
   private analysisCanvas: HTMLCanvasElement;
   private analysisCtx: CanvasRenderingContext2D;
@@ -1802,6 +1853,27 @@ export class VideoCaptureEngine {
     ctx.drawImage(surface, sx, sy, sw, sh, 0, 0, cw, ch);
     const img = ctx.getImageData(0, 0, cw, ch);
     return analyzeGtavRadarRgba(img.data, cw, ch);
+  }
+
+  readGtavReticle(surface: HTMLCanvasElement | HTMLVideoElement) {
+    const { w, h } = this.getSurfaceDimensions(surface);
+    if (w <= 0 || h <= 0) {
+      return analyzeGtavReticleRgba(new Uint8ClampedArray(0), 0, 0);
+    }
+    const cw = 32;
+    const ch = 32;
+    const sw = Math.max(16, Math.floor(w * 0.025));
+    const sh = Math.max(16, Math.floor(h * 0.035));
+    const sx = Math.max(0, Math.floor(w * 0.5 - sw * 0.5));
+    const sy = Math.max(0, Math.floor(h * 0.5 - sh * 0.5));
+    const canvas = document.createElement("canvas");
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return analyzeGtavReticleRgba(new Uint8ClampedArray(0), 0, 0);
+    ctx.drawImage(surface, sx, sy, sw, sh, 0, 0, cw, ch);
+    const img = ctx.getImageData(0, 0, cw, ch);
+    return analyzeGtavReticleRgba(img.data, cw, ch);
   }
 
   captureTile(

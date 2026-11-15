@@ -2001,6 +2001,35 @@ self.onmessage = async (ev) => {
       gpsSteerBias
     };
   }
+  function analyzeGtavReticleRgba(rgba, cw, ch) {
+    if (cw <= 0 || ch <= 0 || rgba.length < cw * ch * 4) {
+      return { state: "none", redPixels: 0, greenPixels: 0, whitePixels: 0 };
+    }
+    const x0 = Math.floor(cw * 0.3);
+    const x1 = Math.ceil(cw * 0.7);
+    const y0 = Math.floor(ch * 0.3);
+    const y1 = Math.ceil(ch * 0.7);
+    let redPixels = 0;
+    let greenPixels = 0;
+    let whitePixels = 0;
+    for (let y = y0;y < y1; y++) {
+      for (let x = x0;x < x1; x++) {
+        const idx = (y * cw + x) * 4;
+        const r = rgba[idx] ?? 0;
+        const g = rgba[idx + 1] ?? 0;
+        const b = rgba[idx + 2] ?? 0;
+        if (r > 185 && g < 85 && b < 85) {
+          redPixels++;
+        } else if (g > 175 && r < 110 && b < 110) {
+          greenPixels++;
+        } else if (r > 210 && g > 210 && b > 210 && Math.max(r, g, b) - Math.min(r, g, b) < 25) {
+          whitePixels++;
+        }
+      }
+    }
+    const state = redPixels >= 4 ? "enemy" : greenPixels >= 4 ? "friendly" : whitePixels >= 3 ? "neutral" : "none";
+    return { state, redPixels, greenPixels, whitePixels };
+  }
 
   class VideoCaptureEngine {
     analysisCanvas;
@@ -2133,6 +2162,27 @@ self.onmessage = async (ev) => {
       ctx.drawImage(surface, sx, sy, sw, sh, 0, 0, cw, ch);
       const img = ctx.getImageData(0, 0, cw, ch);
       return analyzeGtavRadarRgba(img.data, cw, ch);
+    }
+    readGtavReticle(surface) {
+      const { w, h } = this.getSurfaceDimensions(surface);
+      if (w <= 0 || h <= 0) {
+        return analyzeGtavReticleRgba(new Uint8ClampedArray(0), 0, 0);
+      }
+      const cw = 32;
+      const ch = 32;
+      const sw = Math.max(16, Math.floor(w * 0.025));
+      const sh = Math.max(16, Math.floor(h * 0.035));
+      const sx = Math.max(0, Math.floor(w * 0.5 - sw * 0.5));
+      const sy = Math.max(0, Math.floor(h * 0.5 - sh * 0.5));
+      const canvas = document.createElement("canvas");
+      canvas.width = cw;
+      canvas.height = ch;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx)
+        return analyzeGtavReticleRgba(new Uint8ClampedArray(0), 0, 0);
+      ctx.drawImage(surface, sx, sy, sw, sh, 0, 0, cw, ch);
+      const img = ctx.getImageData(0, 0, cw, ch);
+      return analyzeGtavReticleRgba(img.data, cw, ch);
     }
     captureTile(surface, tMs, axes, buttons, analysis, tileW = 320, tileH = 240, depth) {
       const tile = document.createElement("canvas");
@@ -3063,6 +3113,13 @@ self.onmessage = async (ev) => {
         return null;
       return eng.readGtavRadar(surface);
     }
+    function readGtavReticle() {
+      const eng = getEngine();
+      const surface = eng.findVideoSurface();
+      if (!surface || typeof eng.readGtavReticle !== "function")
+        return null;
+      return eng.readGtavReticle(surface);
+    }
     async function autoCombatSweep(options = {}) {
       const {
         aimButton = BTN.LT,
@@ -3079,6 +3136,8 @@ self.onmessage = async (ev) => {
         autoPan = true,
         panMs = 180,
         panDeadbandDeg = 8,
+        verifyReticle = true,
+        reticleScanMs = 450,
         stopWhenClear = true,
         unpause = false,
         pause = false,
@@ -3157,9 +3216,34 @@ self.onmessage = async (ev) => {
           }
           api.setButton(aimButton, 1);
           await api.sleep(aimSettleMs);
-          api.setButton(fireButton, 1);
-          await api.sleep(burstMs);
-          api.setButton(fireButton, 0);
+          let allowFire = true;
+          if (verifyReticle && surface && typeof eng.readGtavReticle === "function") {
+            let ret = eng.readGtavReticle(surface);
+            if (ret.state !== "enemy" && reticleScanMs > 0) {
+              const initSign = radar && radar.enemyAngleDeg !== null && radar.enemyAngleDeg !== 0 ? Math.sign(radar.enemyAngleDeg) : -1;
+              let scannedMs = 0;
+              const stepMs = 45;
+              const halfMs = Math.max(stepMs, Math.floor(reticleScanMs * 0.5));
+              while (scannedMs < reticleScanMs && !shouldAbort()) {
+                const dir = scannedMs < halfMs ? initSign : -initSign;
+                api.setStick(1, dir * 0.32, 0);
+                await api.sleep(stepMs);
+                api.setStick(1, 0, 0);
+                scannedMs += stepMs;
+                ret = eng.readGtavReticle(surface);
+                if (ret.state === "enemy")
+                  break;
+              }
+            }
+            if (ret.state === "friendly") {
+              allowFire = false;
+            }
+          }
+          if (allowFire) {
+            api.setButton(fireButton, 1);
+            await api.sleep(burstMs);
+            api.setButton(fireButton, 0);
+          }
           api.setButton(aimButton, 0);
           if (i + 1 < maxCycles && duckMs > 0) {
             await api.sleep(duckMs);
@@ -3404,6 +3488,7 @@ self.onmessage = async (ev) => {
       waitForRadar,
       retryMission,
       readGtavRadar,
+      readGtavReticle,
       getRecentHistory,
       hideOverlay: hideSheetOverlay,
       resetRoadModel,
@@ -3439,6 +3524,7 @@ self.onmessage = async (ev) => {
     autoCombatSweep: orchestrator.autoCombatSweep,
     switchCharacter: orchestrator.switchCharacter,
     readGtavRadar: orchestrator.readGtavRadar,
+    readGtavReticle: orchestrator.readGtavReticle,
     waitForRadar: orchestrator.waitForRadar,
     retryMission: orchestrator.retryMission,
     getRecentHistory: orchestrator.getRecentHistory,

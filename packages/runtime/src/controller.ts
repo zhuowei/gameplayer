@@ -14,6 +14,7 @@ import type {
   FrameSample,
   GtavDriveOptions,
   GtavRadarReading,
+  GtavReticleReading,
   NavigateToObjectiveOptions,
   SprintMoveOptions,
   SwitchCharacterOptions,
@@ -1065,6 +1066,13 @@ export function createGameplayOrchestrator(
     return eng.readGtavRadar(surface);
   }
 
+  function readGtavReticle(): GtavReticleReading | null {
+    const eng = getEngine();
+    const surface = eng.findVideoSurface();
+    if (!surface || typeof eng.readGtavReticle !== "function") return null;
+    return eng.readGtavReticle(surface);
+  }
+
   /**
    * Closed-loop GTA V combat sweep: checks minimap radar + health at each
    * cycle, fires LT+RT bursts from cover, ducks between bursts, and triggers
@@ -1088,6 +1096,8 @@ export function createGameplayOrchestrator(
       autoPan = true,
       panMs = 180,
       panDeadbandDeg = 8,
+      verifyReticle = true,
+      reticleScanMs = 450,
       stopWhenClear = true,
       unpause = false,
       pause = false,
@@ -1197,9 +1207,36 @@ export function createGameplayOrchestrator(
           }
           api.setButton(aimButton, 1);
           await api.sleep(aimSettleMs);
-          api.setButton(fireButton, 1);
-          await api.sleep(burstMs);
-          api.setButton(fireButton, 0);
+          let allowFire = true;
+          if (verifyReticle && surface && typeof eng.readGtavReticle === "function") {
+            let ret = eng.readGtavReticle(surface);
+            if (ret.state !== "enemy" && reticleScanMs > 0) {
+              const initSign =
+                radar && radar.enemyAngleDeg !== null && radar.enemyAngleDeg !== 0
+                  ? Math.sign(radar.enemyAngleDeg)
+                  : -1;
+              let scannedMs = 0;
+              const stepMs = 45;
+              const halfMs = Math.max(stepMs, Math.floor(reticleScanMs * 0.5));
+              while (scannedMs < reticleScanMs && !shouldAbort()) {
+                const dir = scannedMs < halfMs ? initSign : -initSign;
+                api.setStick(1, dir * 0.32, 0);
+                await api.sleep(stepMs);
+                api.setStick(1, 0, 0);
+                scannedMs += stepMs;
+                ret = eng.readGtavReticle(surface);
+                if (ret.state === "enemy") break;
+              }
+            }
+            if (ret.state === "friendly") {
+              allowFire = false;
+            }
+          }
+          if (allowFire) {
+            api.setButton(fireButton, 1);
+            await api.sleep(burstMs);
+            api.setButton(fireButton, 0);
+          }
           api.setButton(aimButton, 0);
           if (i + 1 < maxCycles && duckMs > 0) {
             await api.sleep(duckMs);
@@ -1523,6 +1560,7 @@ export function createGameplayOrchestrator(
     waitForRadar,
     retryMission,
     readGtavRadar,
+    readGtavReticle,
     getRecentHistory,
     hideOverlay: hideSheetOverlay,
     resetRoadModel,

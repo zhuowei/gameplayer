@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { BTN, createGamepadController } from "./gamepad";
 import {
   analyzeGtavRadarRgba,
+  analyzeGtavReticleRgba,
   analyzeMinimapRgba,
   analyzeRgbaFrame,
   createInitialRoadModel,
@@ -1715,5 +1716,53 @@ describe("vision & PID servo", () => {
     expect(retryRes.ok).toBe(true);
     expect(retryRes.radarVisible).toBe(true);
     expect(retryEvents).toContain(BTN.A);
+
+    // Verify analyzeGtavReticleRgba distinguishes enemy (red), friendly (green), and neutral (white)
+    const retBuf = new Uint8ClampedArray(32 * 32 * 4);
+    const fillCenter = (r: number, g: number, b: number) => {
+      retBuf.fill(0);
+      for (let y = 13; y < 18; y++) {
+        for (let x = 13; x < 18; x++) {
+          const i = (y * 32 + x) * 4;
+          retBuf[i] = r;
+          retBuf[i + 1] = g;
+          retBuf[i + 2] = b;
+          retBuf[i + 3] = 255;
+        }
+      }
+    };
+    fillCenter(230, 35, 35);
+    expect(analyzeGtavReticleRgba(retBuf, 32, 32).state).toBe("enemy");
+    fillCenter(45, 220, 60);
+    expect(analyzeGtavReticleRgba(retBuf, 32, 32).state).toBe("friendly");
+    fillCenter(245, 245, 245);
+    expect(analyzeGtavReticleRgba(retBuf, 32, 32).state).toBe("neutral");
+
+    // Verify autoCombatSweep skips RT when reticle stays friendly
+    const friendlyFires: number[] = [];
+    const origSetBtnF = gp.setButton;
+    gp.setButton = (btn: number, val: number) => {
+      origSetBtnF(btn, val);
+      if (btn === BTN.RT && val > 0) friendlyFires.push(val);
+    };
+    const friendlyOrch = createGameplayOrchestrator(gp, {
+      ...fakeCapture,
+      readGtavReticle: () => ({
+        state: "friendly" as const,
+        redPixels: 0,
+        greenPixels: 12,
+        whitePixels: 0,
+      }),
+    });
+    await friendlyOrch.autoCombatSweep({
+      maxCycles: 1,
+      autoPan: false,
+      verifyReticle: true,
+      reticleScanMs: 50,
+      aimSettleMs: 10,
+      burstMs: 20,
+      showSheetOverlay: false,
+    });
+    expect(friendlyFires.length).toBe(0);
   });
 });
