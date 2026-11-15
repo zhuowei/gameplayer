@@ -1097,7 +1097,7 @@ export function createGameplayOrchestrator(
       panMs = 180,
       panDeadbandDeg = 8,
       verifyReticle = true,
-      reticleScanMs = 450,
+      reticleScanMs = 900,
       stopWhenClear = true,
       unpause = false,
       pause = false,
@@ -1215,18 +1215,24 @@ export function createGameplayOrchestrator(
                 radar && radar.enemyAngleDeg !== null && radar.enemyAngleDeg !== 0
                   ? Math.sign(radar.enemyAngleDeg)
                   : -1;
-              let scannedMs = 0;
-              const stepMs = 45;
-              const halfMs = Math.max(stepMs, Math.floor(reticleScanMs * 0.5));
-              while (scannedMs < reticleScanMs && !shouldAbort()) {
-                const dir = scannedMs < halfMs ? initSign : -initSign;
-                api.setStick(1, dir * 0.32, 0);
-                await api.sleep(stepMs);
-                api.setStick(1, 0, 0);
-                scannedMs += stepMs;
+              const scanStart = performance.now();
+              const switchAt = Math.floor(reticleScanMs * 0.65);
+              const nextFrame = () =>
+                typeof requestAnimationFrame === "function"
+                  ? new Promise<void>((r) => requestAnimationFrame(() => r()))
+                  : api.sleep(16);
+              while (
+                performance.now() - scanStart < reticleScanMs &&
+                !shouldAbort()
+              ) {
+                const elapsed = performance.now() - scanStart;
+                const dir = elapsed < switchAt ? initSign : -initSign;
+                api.setStick(1, dir * 0.45, 0);
+                await nextFrame();
                 ret = eng.readGtavReticle(surface);
                 if (ret.state === "enemy") break;
               }
+              api.setStick(1, 0, 0);
             }
             if (ret.state === "friendly") {
               allowFire = false;

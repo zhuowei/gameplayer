@@ -1656,9 +1656,9 @@ export function analyzeGtavReticleRgba(
       const r = rgba[idx] ?? 0;
       const g = rgba[idx + 1] ?? 0;
       const b = rgba[idx + 2] ?? 0;
-      if (r > 185 && g < 85 && b < 85) {
+      if (r > 175 && r - g > 80 && r - b > 80) {
         redPixels++;
-      } else if (g > 175 && r < 110 && b < 110) {
+      } else if (g > 165 && g - r > 55 && g - b > 55) {
         greenPixels++;
       } else if (
         r > 210 &&
@@ -1671,9 +1671,9 @@ export function analyzeGtavReticleRgba(
     }
   }
   const state =
-    redPixels >= 4
+    redPixels >= 2
       ? "enemy"
-      : greenPixels >= 4
+      : greenPixels >= 3
         ? "friendly"
         : whitePixels >= 3
           ? "neutral"

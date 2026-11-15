@@ -2018,16 +2018,16 @@ self.onmessage = async (ev) => {
         const r = rgba[idx] ?? 0;
         const g = rgba[idx + 1] ?? 0;
         const b = rgba[idx + 2] ?? 0;
-        if (r > 185 && g < 85 && b < 85) {
+        if (r > 175 && r - g > 80 && r - b > 80) {
           redPixels++;
-        } else if (g > 175 && r < 110 && b < 110) {
+        } else if (g > 165 && g - r > 55 && g - b > 55) {
           greenPixels++;
         } else if (r > 210 && g > 210 && b > 210 && Math.max(r, g, b) - Math.min(r, g, b) < 25) {
           whitePixels++;
         }
       }
     }
-    const state = redPixels >= 4 ? "enemy" : greenPixels >= 4 ? "friendly" : whitePixels >= 3 ? "neutral" : "none";
+    const state = redPixels >= 2 ? "enemy" : greenPixels >= 3 ? "friendly" : whitePixels >= 3 ? "neutral" : "none";
     return { state, redPixels, greenPixels, whitePixels };
   }
 
@@ -3137,7 +3137,7 @@ self.onmessage = async (ev) => {
         panMs = 180,
         panDeadbandDeg = 8,
         verifyReticle = true,
-        reticleScanMs = 450,
+        reticleScanMs = 900,
         stopWhenClear = true,
         unpause = false,
         pause = false,
@@ -3221,19 +3221,19 @@ self.onmessage = async (ev) => {
             let ret = eng.readGtavReticle(surface);
             if (ret.state !== "enemy" && reticleScanMs > 0) {
               const initSign = radar && radar.enemyAngleDeg !== null && radar.enemyAngleDeg !== 0 ? Math.sign(radar.enemyAngleDeg) : -1;
-              let scannedMs = 0;
-              const stepMs = 45;
-              const halfMs = Math.max(stepMs, Math.floor(reticleScanMs * 0.5));
-              while (scannedMs < reticleScanMs && !shouldAbort()) {
-                const dir = scannedMs < halfMs ? initSign : -initSign;
-                api.setStick(1, dir * 0.32, 0);
-                await api.sleep(stepMs);
-                api.setStick(1, 0, 0);
-                scannedMs += stepMs;
+              const scanStart = performance.now();
+              const switchAt = Math.floor(reticleScanMs * 0.65);
+              const nextFrame = () => typeof requestAnimationFrame === "function" ? new Promise((r) => requestAnimationFrame(() => r())) : api.sleep(16);
+              while (performance.now() - scanStart < reticleScanMs && !shouldAbort()) {
+                const elapsed = performance.now() - scanStart;
+                const dir = elapsed < switchAt ? initSign : -initSign;
+                api.setStick(1, dir * 0.45, 0);
+                await nextFrame();
                 ret = eng.readGtavReticle(surface);
                 if (ret.state === "enemy")
                   break;
               }
+              api.setStick(1, 0, 0);
             }
             if (ret.state === "friendly") {
               allowFire = false;
