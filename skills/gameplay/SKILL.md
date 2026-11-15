@@ -12,6 +12,7 @@ Play games strictly through rendered video pixels (`<canvas>` / `<video>`) and v
 
 For game-specific bindings, track hazards, and empirical post-mortems, load on demand:
 - **SuperTuxKart controls, pause quirks & tutorial reference**: [references/supertuxkart.md](./references/supertuxkart.md) *(Note: if evaluating zero-shot generalization on an unseen Singleplayer track, use only the general controls/menu section or calibrate from scratch—never use track-specific spoilers).*
+- **Grand Theft Auto V (MoonlightWeb) controls & combat/driving traps**: [references/gtav.md](./references/gtav.md)
 - **Cross-game architecture & failure lessons**: [docs/lessons-learned.md](../../docs/lessons-learned.md)
 
 ---
