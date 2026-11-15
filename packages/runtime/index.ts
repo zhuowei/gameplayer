@@ -20,6 +20,7 @@ const gameplayApi = {
   dispatchConnected: gamepad.dispatchConnected,
   runChunk: orchestrator.runChunk,
   driveServo: orchestrator.driveServo,
+  gtavDrive: orchestrator.gtavDrive,
   smartRescue: orchestrator.smartRescue,
   coverPeekBurst: orchestrator.coverPeekBurst,
   sprintMove: orchestrator.sprintMove,

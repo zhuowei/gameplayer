@@ -1403,4 +1403,91 @@ describe("vision & PID servo", () => {
     expect(low.lowHealth).toBe(true);
     expect(low.healthPct).toBeLessThan(0.1);
   });
+
+  test("autoCombatSweep pans toward radar flankers and gtavDrive defaults gasButton to RT", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv("complete");
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+    const canvas = {} as HTMLCanvasElement;
+    const seenButtons: Array<{ y: number; rt: number }> = [];
+    const seenStickX: number[] = [];
+    const origSetButton = gp.setButton;
+    gp.setButton = (btn: number, val: number) => {
+      origSetButton(btn, val);
+      const st = gp.getState();
+      seenButtons.push({ y: st.buttons[BTN.Y] ?? 0, rt: st.buttons[BTN.RT] ?? 0 });
+    };
+    const origSetStick = gp.setStick;
+    gp.setStick = (idx: number, x: number, y: number) => {
+      origSetStick(idx, x, y);
+      if (idx === 1 && x !== 0) seenStickX.push(x);
+    };
+
+    const fakeCapture = {
+      resetTracking() {},
+      findVideoSurface: () => canvas,
+      getSurfaceDimensions: () => ({ w: 64, h: 48 }),
+      sampleAnalysis: () => ({
+        motionScore: 0.08,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadConfidence: 0.6,
+      }),
+      readGtavRadar: () => ({
+        radarVisible: true,
+        healthPct: 0.85,
+        lowHealth: false,
+        enemyPixels: 10,
+        enemiesAhead: 0,
+        enemiesLeft: 8,
+        enemiesRight: 2,
+        enemiesBehind: 0,
+        closestEnemyDist: 0.12,
+      }),
+      captureTile: (
+        _s: HTMLCanvasElement,
+        tMs: number,
+        axes: number[],
+        buttons: number[],
+        a: {
+          motionScore: number;
+          bannerDelta: number;
+          redAlertRatio: number;
+          roadOffsetX: number;
+          roadConfidence: number;
+        },
+      ) => ({
+        tMs,
+        width: 64,
+        height: 48,
+        canvas,
+        axes,
+        buttons,
+        ...a,
+      }),
+      captureFullFrame: () => canvas,
+    } as unknown as VideoCaptureEngine;
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture);
+    const sweepRes = await orch.autoCombatSweep({
+      maxCycles: 1,
+      panMs: 10,
+      aimSettleMs: 10,
+      burstMs: 10,
+      duckMs: 0,
+      showSheetOverlay: false,
+    });
+    expect(sweepRes.ok).toBe(true);
+    expect(seenStickX.some((x) => x < 0)).toBe(true);
+
+    seenButtons.length = 0;
+    const driveRes = await orch.gtavDrive({
+      maxDurationMs: 60,
+      tickMs: 12,
+      showSheetOverlay: false,
+    });
+    expect(driveRes.ok).toBe(true);
+    expect(seenButtons.some((b) => b.rt > 0)).toBe(true);
+    expect(seenButtons.every((b) => b.y === 0)).toBe(true);
+  });
 });

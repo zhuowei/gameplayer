@@ -203,4 +203,6 @@ export interface AutoCombatSweepOptions extends ChunkOptions {
   duckMs?: number;
   special?: boolean;
   autoSpecialOnLowHealth?: boolean;
+  autoPan?: boolean;
+  panMs?: number;
 }

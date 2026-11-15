@@ -1044,6 +1044,8 @@ export function createGameplayOrchestrator(
       duckMs = 180,
       special = false,
       autoSpecialOnLowHealth = true,
+      autoPan = true,
+      panMs = 180,
       unpause = false,
       pause = false,
       stopOnStuck = false,
@@ -1088,6 +1090,21 @@ export function createGameplayOrchestrator(
               break;
             }
           }
+          if (autoPan && radar && radar.enemiesAhead === 0) {
+            if (radar.enemiesLeft > radar.enemiesRight && radar.enemiesLeft > 0) {
+              api.setStick(1, -0.75, 0);
+              await api.sleep(panMs);
+              api.setStick(1, 0, 0);
+            } else if (radar.enemiesRight > 0) {
+              api.setStick(1, 0.75, 0);
+              await api.sleep(panMs);
+              api.setStick(1, 0, 0);
+            } else if (radar.enemiesBehind > 0) {
+              api.setStick(1, 0.9, 0);
+              await api.sleep(Math.round(panMs * 1.6));
+              api.setStick(1, 0, 0);
+            }
+          }
           api.setButton(aimButton, 1);
           await api.sleep(aimSettleMs);
           api.setButton(fireButton, 1);
@@ -1098,6 +1115,7 @@ export function createGameplayOrchestrator(
             await api.sleep(duckMs);
           }
         }
+        api.setStick(1, 0, 0);
         api.setButton(fireButton, 0);
         api.setButton(aimButton, 0);
       },
@@ -1111,9 +1129,27 @@ export function createGameplayOrchestrator(
     );
   }
 
+  /**
+   * GTA V safe driving wrapper around driveServo: uses RT for gas (never Y,
+   * which exits the vehicle) and disables pause/unpause/race-finish hooks.
+   */
+  async function gtavDrive(
+    options: DriveServoOptions = {},
+  ): Promise<ChunkResult> {
+    return driveServo({
+      gasButton: BTN.RT,
+      unpause: false,
+      pause: false,
+      stopOnRaceFinish: false,
+      label: "gtav-drive",
+      ...options,
+    });
+  }
+
   return {
     runChunk,
     driveServo,
+    gtavDrive,
     smartRescue,
     coverPeekBurst,
     sprintMove,

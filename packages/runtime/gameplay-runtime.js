@@ -2959,6 +2959,8 @@ self.onmessage = async (ev) => {
         duckMs = 180,
         special = false,
         autoSpecialOnLowHealth = true,
+        autoPan = true,
+        panMs = 180,
         unpause = false,
         pause = false,
         stopOnStuck = false,
@@ -2996,6 +2998,21 @@ self.onmessage = async (ev) => {
               break;
             }
           }
+          if (autoPan && radar && radar.enemiesAhead === 0) {
+            if (radar.enemiesLeft > radar.enemiesRight && radar.enemiesLeft > 0) {
+              api.setStick(1, -0.75, 0);
+              await api.sleep(panMs);
+              api.setStick(1, 0, 0);
+            } else if (radar.enemiesRight > 0) {
+              api.setStick(1, 0.75, 0);
+              await api.sleep(panMs);
+              api.setStick(1, 0, 0);
+            } else if (radar.enemiesBehind > 0) {
+              api.setStick(1, 0.9, 0);
+              await api.sleep(Math.round(panMs * 1.6));
+              api.setStick(1, 0, 0);
+            }
+          }
           api.setButton(aimButton, 1);
           await api.sleep(aimSettleMs);
           api.setButton(fireButton, 1);
@@ -3006,6 +3023,7 @@ self.onmessage = async (ev) => {
             await api.sleep(duckMs);
           }
         }
+        api.setStick(1, 0, 0);
         api.setButton(fireButton, 0);
         api.setButton(aimButton, 0);
       }, {
@@ -3016,9 +3034,20 @@ self.onmessage = async (ev) => {
         label
       });
     }
+    async function gtavDrive(options = {}) {
+      return driveServo({
+        gasButton: BTN.RT,
+        unpause: false,
+        pause: false,
+        stopOnRaceFinish: false,
+        label: "gtav-drive",
+        ...options
+      });
+    }
     return {
       runChunk,
       driveServo,
+      gtavDrive,
       smartRescue,
       coverPeekBurst,
       sprintMove,
@@ -3051,6 +3080,7 @@ self.onmessage = async (ev) => {
     dispatchConnected: gamepad.dispatchConnected,
     runChunk: orchestrator.runChunk,
     driveServo: orchestrator.driveServo,
+    gtavDrive: orchestrator.gtavDrive,
     smartRescue: orchestrator.smartRescue,
     coverPeekBurst: orchestrator.coverPeekBurst,
     sprintMove: orchestrator.sprintMove,
