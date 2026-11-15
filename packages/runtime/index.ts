@@ -28,6 +28,7 @@ const gameplayApi = {
   autoCombatSweep: orchestrator.autoCombatSweep,
   switchCharacter: orchestrator.switchCharacter,
   readGtavRadar: orchestrator.readGtavRadar,
+  waitForRadar: orchestrator.waitForRadar,
   getRecentHistory: orchestrator.getRecentHistory,
   hideOverlay: hideSheetOverlay,
   resetRoadModel: orchestrator.resetRoadModel,

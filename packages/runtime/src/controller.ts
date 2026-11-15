@@ -17,6 +17,7 @@ import type {
   NavigateToObjectiveOptions,
   SprintMoveOptions,
   SwitchCharacterOptions,
+  WaitForRadarOptions,
 } from "./types";
 import {
   buildContactSheetCanvas,
@@ -79,6 +80,7 @@ export interface GameplayOrchestrator {
   autoCombatSweep(options?: AutoCombatSweepOptions): Promise<ChunkResult>;
   switchCharacter(options?: SwitchCharacterOptions): Promise<ChunkResult>;
   readGtavRadar(): GtavRadarReading | null;
+  waitForRadar(options?: WaitForRadarOptions): Promise<GtavRadarReading | null>;
   getRecentHistory(): ChunkHistoryEntry[];
   hideOverlay(): void;
   resetRoadModel(): void;
@@ -1424,6 +1426,22 @@ export function createGameplayOrchestrator(
     );
   }
 
+  async function waitForRadar(
+    options: WaitForRadarOptions = {},
+  ): Promise<GtavRadarReading | null> {
+    const { visible = true, timeoutMs = 10000, pollMs = 100 } = options;
+    const startAt = performance.now();
+    let latest = readGtavRadar();
+    while (performance.now() - startAt < timeoutMs) {
+      latest = readGtavRadar();
+      if (latest && latest.radarVisible === visible) {
+        return latest;
+      }
+      await gamepad.sleep(pollMs);
+    }
+    return latest;
+  }
+
   return {
     runChunk,
     driveServo,
@@ -1434,6 +1452,7 @@ export function createGameplayOrchestrator(
     navigateToObjective,
     autoCombatSweep,
     switchCharacter,
+    waitForRadar,
     readGtavRadar,
     getRecentHistory,
     hideOverlay: hideSheetOverlay,

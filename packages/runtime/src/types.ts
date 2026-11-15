@@ -246,3 +246,9 @@ export interface SwitchCharacterOptions extends ChunkOptions {
   holdMs?: number;
   settleMs?: number;
 }
+
+export interface WaitForRadarOptions {
+  visible?: boolean;
+  timeoutMs?: number;
+  pollMs?: number;
+}

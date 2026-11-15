@@ -1663,5 +1663,25 @@ describe("vision & PID servo", () => {
     expect(swRes.ok).toBe(true);
     expect(events.indexOf("dpad:1")).toBeLessThan(events.indexOf("stk1:1,0"));
     expect(events.indexOf("dpad:0")).toBeLessThan(events.indexOf("stk1:0,0"));
+
+    // Verify waitForRadar polls until radarVisible matches
+    let waitCalls = 0;
+    const waitOrch = createGameplayOrchestrator(gp, {
+      ...fakeCapture,
+      readGtavRadar: () => {
+        waitCalls++;
+        return {
+          ...fakeCapture.readGtavRadar(),
+          radarVisible: waitCalls >= 3,
+        };
+      },
+    });
+    const waitRes = await waitOrch.waitForRadar({
+      visible: true,
+      timeoutMs: 500,
+      pollMs: 10,
+    });
+    expect(waitRes?.radarVisible).toBe(true);
+    expect(waitCalls).toBeGreaterThanOrEqual(3);
   });
 });

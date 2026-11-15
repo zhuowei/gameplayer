@@ -3332,6 +3332,19 @@ self.onmessage = async (ev) => {
         label
       });
     }
+    async function waitForRadar(options = {}) {
+      const { visible = true, timeoutMs = 1e4, pollMs = 100 } = options;
+      const startAt = performance.now();
+      let latest = readGtavRadar();
+      while (performance.now() - startAt < timeoutMs) {
+        latest = readGtavRadar();
+        if (latest && latest.radarVisible === visible) {
+          return latest;
+        }
+        await gamepad.sleep(pollMs);
+      }
+      return latest;
+    }
     return {
       runChunk,
       driveServo,
@@ -3342,6 +3355,7 @@ self.onmessage = async (ev) => {
       navigateToObjective,
       autoCombatSweep,
       switchCharacter,
+      waitForRadar,
       readGtavRadar,
       getRecentHistory,
       hideOverlay: hideSheetOverlay,
@@ -3378,6 +3392,7 @@ self.onmessage = async (ev) => {
     autoCombatSweep: orchestrator.autoCombatSweep,
     switchCharacter: orchestrator.switchCharacter,
     readGtavRadar: orchestrator.readGtavRadar,
+    waitForRadar: orchestrator.waitForRadar,
     getRecentHistory: orchestrator.getRecentHistory,
     hideOverlay: hideSheetOverlay,
     resetRoadModel: orchestrator.resetRoadModel,
