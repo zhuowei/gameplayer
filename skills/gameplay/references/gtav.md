@@ -58,5 +58,7 @@ Always prefer these in-page closed-loop helpers (added in `2b71837`, `44b2e74`, 
    - Single-exchange cover-safe `LT` aim + optional Right Stick nudge (`aimX`, `aimY`, `aimNudgeMs`) + `RT` bursts + optional `special: true`, guaranteed to release `LT` and `RT` before returning.
 6. **`window.gameplayApi.gtavDrive(options?)`**:
    - Safe GTA V vehicle wrapper around `driveServo()` defaulting `{ gasButton: BTN.RT, unpause: false, pause: false, stopOnRaceFinish: false, useRadarGps: true, radarGpsWeight: 0.35 }` so `BTN.Y` (exit vehicle) is never pressed and minimap GPS/objective steering bias is blended into road-following.
-7. **`window.gameplayApi.getRecentHistory()`**:
+7. **`window.gameplayApi.switchCharacter(options?)`**:
+   - Atomic character-wheel switch: holds `BTN.DPAD_DOWN`, deflects `Right Stick` (`dirX`, `dirY`, default `{ dirX: 1, dirY: 0, holdMs: 550 }`), and releases `BTN.DPAD_DOWN` *before* resetting `Right Stick` so the selection registers reliably.
+8. **`window.gameplayApi.getRecentHistory()`**:
    - Returns the last 12 chunk telemetry entries (`timestamp`, `label`, `stopReason`, `durationMs`, `avgMotion`, `stuckDetected`, `ok`) for quick post-mortem checks without video encoding.

@@ -16,6 +16,7 @@ import type {
   GtavRadarReading,
   NavigateToObjectiveOptions,
   SprintMoveOptions,
+  SwitchCharacterOptions,
 } from "./types";
 import {
   buildContactSheetCanvas,
@@ -76,6 +77,7 @@ export interface GameplayOrchestrator {
   sprintMove(options?: SprintMoveOptions): Promise<ChunkResult>;
   navigateToObjective(options?: NavigateToObjectiveOptions): Promise<ChunkResult>;
   autoCombatSweep(options?: AutoCombatSweepOptions): Promise<ChunkResult>;
+  switchCharacter(options?: SwitchCharacterOptions): Promise<ChunkResult>;
   readGtavRadar(): GtavRadarReading | null;
   getRecentHistory(): ChunkHistoryEntry[];
   hideOverlay(): void;
@@ -1383,6 +1385,45 @@ export function createGameplayOrchestrator(
     });
   }
 
+  async function switchCharacter(
+    options: SwitchCharacterOptions = {},
+  ): Promise<ChunkResult> {
+    const {
+      dirX = 1,
+      dirY = 0,
+      holdMs = 550,
+      settleMs = 250,
+      unpause = false,
+      pause = false,
+      stopOnStuck = false,
+      label = "switch-char",
+      ...rest
+    } = options;
+
+    return runChunk(
+      async ({ api }) => {
+        api.setButton(BTN.DPAD_DOWN, 1);
+        await api.sleep(220);
+        api.setStick(1, dirX, dirY);
+        await api.sleep(holdMs);
+        // Release DPAD_DOWN while stick is still held to confirm selection
+        api.setButton(BTN.DPAD_DOWN, 0);
+        await api.sleep(80);
+        api.setStick(1, 0, 0);
+        if (settleMs > 0) {
+          await api.sleep(settleMs);
+        }
+      },
+      {
+        ...rest,
+        unpause,
+        pause,
+        stopOnStuck,
+        label,
+      },
+    );
+  }
+
   return {
     runChunk,
     driveServo,
@@ -1392,6 +1433,7 @@ export function createGameplayOrchestrator(
     sprintMove,
     navigateToObjective,
     autoCombatSweep,
+    switchCharacter,
     readGtavRadar,
     getRecentHistory,
     hideOverlay: hideSheetOverlay,

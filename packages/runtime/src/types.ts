@@ -239,3 +239,10 @@ export interface GtavDriveOptions extends DriveServoOptions {
   useRadarGps?: boolean;
   radarGpsWeight?: number;
 }
+
+export interface SwitchCharacterOptions extends ChunkOptions {
+  dirX?: number;
+  dirY?: number;
+  holdMs?: number;
+  settleMs?: number;
+}

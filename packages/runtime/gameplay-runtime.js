@@ -3301,6 +3301,37 @@ self.onmessage = async (ev) => {
         ...rest
       });
     }
+    async function switchCharacter(options = {}) {
+      const {
+        dirX = 1,
+        dirY = 0,
+        holdMs = 550,
+        settleMs = 250,
+        unpause = false,
+        pause = false,
+        stopOnStuck = false,
+        label = "switch-char",
+        ...rest
+      } = options;
+      return runChunk(async ({ api }) => {
+        api.setButton(BTN.DPAD_DOWN, 1);
+        await api.sleep(220);
+        api.setStick(1, dirX, dirY);
+        await api.sleep(holdMs);
+        api.setButton(BTN.DPAD_DOWN, 0);
+        await api.sleep(80);
+        api.setStick(1, 0, 0);
+        if (settleMs > 0) {
+          await api.sleep(settleMs);
+        }
+      }, {
+        ...rest,
+        unpause,
+        pause,
+        stopOnStuck,
+        label
+      });
+    }
     return {
       runChunk,
       driveServo,
@@ -3310,6 +3341,7 @@ self.onmessage = async (ev) => {
       sprintMove,
       navigateToObjective,
       autoCombatSweep,
+      switchCharacter,
       readGtavRadar,
       getRecentHistory,
       hideOverlay: hideSheetOverlay,
@@ -3344,6 +3376,7 @@ self.onmessage = async (ev) => {
     sprintMove: orchestrator.sprintMove,
     navigateToObjective: orchestrator.navigateToObjective,
     autoCombatSweep: orchestrator.autoCombatSweep,
+    switchCharacter: orchestrator.switchCharacter,
     readGtavRadar: orchestrator.readGtavRadar,
     getRecentHistory: orchestrator.getRecentHistory,
     hideOverlay: hideSheetOverlay,

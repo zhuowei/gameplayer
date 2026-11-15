@@ -1640,5 +1640,28 @@ describe("vision & PID servo", () => {
       showSheetOverlay: false,
     });
     expect(enemyStop.stopReason).toBe("enemy_detected");
+
+    // Verify switchCharacter holds DPAD_DOWN, deflects stick 1, and releases DPAD_DOWN before stick 1
+    const events: string[] = [];
+    const origBtn3 = gp.setButton;
+    gp.setButton = (btn: number, val: number) => {
+      origBtn3(btn, val);
+      if (btn === BTN.DPAD_DOWN) events.push(`dpad:${val}`);
+    };
+    const origStk3 = gp.setStick;
+    gp.setStick = (idx: number, x: number, y: number) => {
+      origStk3(idx, x, y);
+      if (idx === 1) events.push(`stk1:${x},${y}`);
+    };
+    const swRes = await orch.switchCharacter({
+      dirX: 1,
+      dirY: 0,
+      holdMs: 30,
+      settleMs: 10,
+      showSheetOverlay: false,
+    });
+    expect(swRes.ok).toBe(true);
+    expect(events.indexOf("dpad:1")).toBeLessThan(events.indexOf("stk1:1,0"));
+    expect(events.indexOf("dpad:0")).toBeLessThan(events.indexOf("stk1:0,0"));
   });
 });
