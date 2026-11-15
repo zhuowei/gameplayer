@@ -1087,6 +1087,7 @@ export function createGameplayOrchestrator(
       autoSpecialOnLowHealth = true,
       autoPan = true,
       panMs = 180,
+      panDeadbandDeg = 8,
       stopWhenClear = true,
       unpause = false,
       pause = false,
@@ -1143,15 +1144,25 @@ export function createGameplayOrchestrator(
               break;
             }
           }
-          if (autoPan && radar && radar.enemiesAhead === 0) {
+          if (
+            autoPan &&
+            radar &&
+            ((radar.enemyAngleDeg !== null &&
+              Math.abs(radar.enemyAngleDeg) > panDeadbandDeg) ||
+              (radar.enemyAngleDeg === null && radar.enemiesAhead === 0))
+          ) {
             const panDir =
-              radar.enemiesLeft > radar.enemiesRight && radar.enemiesLeft > 0
-                ? -0.85
-                : radar.enemiesRight > 0
-                  ? 0.85
-                  : radar.enemiesBehind > 0
-                    ? 0.95
-                    : 0;
+              radar.enemyAngleDeg !== null
+                ? Math.sign(radar.enemyAngleDeg) *
+                  (Math.abs(radar.enemyAngleDeg) > 22 ? 0.85 : 0.48)
+                : radar.enemiesLeft > radar.enemiesRight &&
+                    radar.enemiesLeft > 0
+                  ? -0.85
+                  : radar.enemiesRight > 0
+                    ? 0.85
+                    : radar.enemiesBehind > 0
+                      ? 0.95
+                      : 0;
             if (panDir !== 0) {
               const maxPanMs = Math.max(panMs, 650);
               const stepPanMs = 65;
@@ -1164,7 +1175,17 @@ export function createGameplayOrchestrator(
                   surface && typeof eng.readGtavRadar === "function"
                     ? eng.readGtavRadar(surface)
                     : null;
-                if (rNow && rNow.enemiesAhead > 0) break;
+                if (rNow) {
+                  if (
+                    rNow.enemyAngleDeg !== null &&
+                    Math.abs(rNow.enemyAngleDeg) <= panDeadbandDeg
+                  ) {
+                    break;
+                  }
+                  if (rNow.enemyAngleDeg === null && rNow.enemiesAhead > 0) {
+                    break;
+                  }
+                }
               }
               api.setStick(1, 0, 0);
             }
@@ -1453,6 +1474,37 @@ export function createGameplayOrchestrator(
     return latest;
   }
 
+  /**
+   * Retry a failed mission (always BTN.A Retry, never BTN.X Skip) and block
+   * until the checkpoint finishes reloading and the radar is visible again,
+   * eliminating post-retry screenshot latency on timed checkpoints.
+   */
+  async function retryMission(options: RetryMissionOptions = {}) {
+    const {
+      button = BTN.A,
+      tapMs = 90,
+      radarTimeoutMs = 15000,
+      pollMs = 100,
+      settleMs = 150,
+    } = options;
+    const startAt = performance.now();
+    await gamepad.tapButton(button, tapMs, 450);
+    const radar = await waitForRadar({
+      visible: true,
+      timeoutMs: radarTimeoutMs,
+      pollMs,
+    });
+    if (settleMs > 0) {
+      await gamepad.sleep(settleMs);
+    }
+    return {
+      ok: Boolean(radar && radar.radarVisible),
+      radarVisible: Boolean(radar && radar.radarVisible),
+      elapsedMs: Math.round(performance.now() - startAt),
+      radar,
+    };
+  }
+
   return {
     runChunk,
     driveServo,
@@ -1464,6 +1516,7 @@ export function createGameplayOrchestrator(
     autoCombatSweep,
     switchCharacter,
     waitForRadar,
+    retryMission,
     readGtavRadar,
     getRecentHistory,
     hideOverlay: hideSheetOverlay,

@@ -1462,6 +1462,9 @@ export function analyzeGtavRadarRgba(
   let enemiesRight = 0;
   let enemiesBehind = 0;
   let minDist = Infinity;
+  let enemyWeightSum = 0;
+  let enemyWeightedDx = 0;
+  let enemyWeightedDy = 0;
 
   let yellowCount = 0;
   let yellowSumX = 0;
@@ -1490,6 +1493,10 @@ export function analyzeGtavRadarRgba(
         const dy = y - py;
         const dist = Math.hypot(dx, dy) / cw;
         if (dist < minDist) minDist = dist;
+        const w = 1 / (dist + 0.05);
+        enemyWeightSum += w;
+        enemyWeightedDx += dx * w;
+        enemyWeightedDy += dy * w;
         if (dy <= 0 && Math.abs(dx) <= Math.abs(dy) * 1.15) {
           enemiesAhead++;
         } else if (dy > Math.abs(dx) * 1.15) {
@@ -1594,6 +1601,15 @@ export function analyzeGtavRadarRgba(
     gpsSteerBias = Math.max(-1, Math.min(1, objectiveAngleDeg / 90));
   }
 
+  const enemyAngleDeg =
+    enemyPixels > 0 && enemyWeightSum > 0
+      ? Math.atan2(
+          enemyWeightedDx / enemyWeightSum,
+          -(enemyWeightedDy / enemyWeightSum),
+        ) *
+        (180 / Math.PI)
+      : null;
+
   return {
     radarVisible,
     healthPct,
@@ -1604,6 +1620,7 @@ export function analyzeGtavRadarRgba(
     enemiesRight,
     enemiesBehind,
     closestEnemyDist: Number.isFinite(minDist) ? minDist : null,
+    enemyAngleDeg,
     objectiveVisible,
     objectiveColor,
     objectiveAngleDeg,

@@ -194,6 +194,7 @@ export interface GtavRadarReading {
   enemiesRight: number;
   enemiesBehind: number;
   closestEnemyDist: number | null;
+  enemyAngleDeg: number | null;
   objectiveVisible: boolean;
   objectiveColor: "yellow" | "green" | "blue" | null;
   objectiveAngleDeg: number | null;
@@ -216,6 +217,7 @@ export interface AutoCombatSweepOptions extends ChunkOptions {
   autoSpecialOnLowHealth?: boolean;
   autoPan?: boolean;
   panMs?: number;
+  panDeadbandDeg?: number;
   stopWhenClear?: boolean;
 }
 
@@ -251,4 +253,12 @@ export interface WaitForRadarOptions {
   visible?: boolean;
   timeoutMs?: number;
   pollMs?: number;
+}
+
+export interface RetryMissionOptions {
+  button?: number;
+  tapMs?: number;
+  radarTimeoutMs?: number;
+  pollMs?: number;
+  settleMs?: number;
 }

@@ -1848,6 +1848,9 @@ self.onmessage = async (ev) => {
     let enemiesRight = 0;
     let enemiesBehind = 0;
     let minDist = Infinity;
+    let enemyWeightSum = 0;
+    let enemyWeightedDx = 0;
+    let enemyWeightedDy = 0;
     let yellowCount = 0;
     let yellowSumX = 0;
     let yellowSumY = 0;
@@ -1877,6 +1880,10 @@ self.onmessage = async (ev) => {
           const dist = Math.hypot(dx, dy) / cw;
           if (dist < minDist)
             minDist = dist;
+          const w = 1 / (dist + 0.05);
+          enemyWeightSum += w;
+          enemyWeightedDx += dx * w;
+          enemyWeightedDy += dy * w;
           if (dy <= 0 && Math.abs(dx) <= Math.abs(dy) * 1.15) {
             enemiesAhead++;
           } else if (dy > Math.abs(dx) * 1.15) {
@@ -1974,6 +1981,7 @@ self.onmessage = async (ev) => {
     } else if (objectiveAngleDeg !== null) {
       gpsSteerBias = Math.max(-1, Math.min(1, objectiveAngleDeg / 90));
     }
+    const enemyAngleDeg = enemyPixels > 0 && enemyWeightSum > 0 ? Math.atan2(enemyWeightedDx / enemyWeightSum, -(enemyWeightedDy / enemyWeightSum)) * (180 / Math.PI) : null;
     return {
       radarVisible,
       healthPct,
@@ -1984,6 +1992,7 @@ self.onmessage = async (ev) => {
       enemiesRight,
       enemiesBehind,
       closestEnemyDist: Number.isFinite(minDist) ? minDist : null,
+      enemyAngleDeg,
       objectiveVisible,
       objectiveColor,
       objectiveAngleDeg,
@@ -3069,6 +3078,7 @@ self.onmessage = async (ev) => {
         autoSpecialOnLowHealth = true,
         autoPan = true,
         panMs = 180,
+        panDeadbandDeg = 8,
         stopWhenClear = true,
         unpause = false,
         pause = false,
@@ -3119,8 +3129,8 @@ self.onmessage = async (ev) => {
               break;
             }
           }
-          if (autoPan && radar && radar.enemiesAhead === 0) {
-            const panDir = radar.enemiesLeft > radar.enemiesRight && radar.enemiesLeft > 0 ? -0.85 : radar.enemiesRight > 0 ? 0.85 : radar.enemiesBehind > 0 ? 0.95 : 0;
+          if (autoPan && radar && (radar.enemyAngleDeg !== null && Math.abs(radar.enemyAngleDeg) > panDeadbandDeg || radar.enemyAngleDeg === null && radar.enemiesAhead === 0)) {
+            const panDir = radar.enemyAngleDeg !== null ? Math.sign(radar.enemyAngleDeg) * (Math.abs(radar.enemyAngleDeg) > 22 ? 0.85 : 0.48) : radar.enemiesLeft > radar.enemiesRight && radar.enemiesLeft > 0 ? -0.85 : radar.enemiesRight > 0 ? 0.85 : radar.enemiesBehind > 0 ? 0.95 : 0;
             if (panDir !== 0) {
               const maxPanMs = Math.max(panMs, 650);
               const stepPanMs = 65;
@@ -3130,8 +3140,14 @@ self.onmessage = async (ev) => {
                 await api.sleep(stepPanMs);
                 pannedMs += stepPanMs;
                 const rNow = surface && typeof eng.readGtavRadar === "function" ? eng.readGtavRadar(surface) : null;
-                if (rNow && rNow.enemiesAhead > 0)
-                  break;
+                if (rNow) {
+                  if (rNow.enemyAngleDeg !== null && Math.abs(rNow.enemyAngleDeg) <= panDeadbandDeg) {
+                    break;
+                  }
+                  if (rNow.enemyAngleDeg === null && rNow.enemiesAhead > 0) {
+                    break;
+                  }
+                }
               }
               api.setStick(1, 0, 0);
             }
@@ -3347,6 +3363,31 @@ self.onmessage = async (ev) => {
       }
       return latest;
     }
+    async function retryMission(options = {}) {
+      const {
+        button = BTN.A,
+        tapMs = 90,
+        radarTimeoutMs = 15000,
+        pollMs = 100,
+        settleMs = 150
+      } = options;
+      const startAt = performance.now();
+      await gamepad.tapButton(button, tapMs, 450);
+      const radar = await waitForRadar({
+        visible: true,
+        timeoutMs: radarTimeoutMs,
+        pollMs
+      });
+      if (settleMs > 0) {
+        await gamepad.sleep(settleMs);
+      }
+      return {
+        ok: Boolean(radar && radar.radarVisible),
+        radarVisible: Boolean(radar && radar.radarVisible),
+        elapsedMs: Math.round(performance.now() - startAt),
+        radar
+      };
+    }
     return {
       runChunk,
       driveServo,
@@ -3358,6 +3399,7 @@ self.onmessage = async (ev) => {
       autoCombatSweep,
       switchCharacter,
       waitForRadar,
+      retryMission,
       readGtavRadar,
       getRecentHistory,
       hideOverlay: hideSheetOverlay,
@@ -3395,6 +3437,7 @@ self.onmessage = async (ev) => {
     switchCharacter: orchestrator.switchCharacter,
     readGtavRadar: orchestrator.readGtavRadar,
     waitForRadar: orchestrator.waitForRadar,
+    retryMission: orchestrator.retryMission,
     getRecentHistory: orchestrator.getRecentHistory,
     hideOverlay: hideSheetOverlay,
     resetRoadModel: orchestrator.resetRoadModel,

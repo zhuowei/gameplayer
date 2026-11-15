@@ -1388,6 +1388,8 @@ describe("vision & PID servo", () => {
     expect(healthy.healthPct).toBeGreaterThan(0.8);
     expect(healthy.lowHealth).toBe(false);
     expect(healthy.enemiesAhead).toBeGreaterThan(0);
+    expect(healthy.enemyAngleDeg).not.toBeNull();
+    expect(Math.abs(healthy.enemyAngleDeg!)).toBeLessThan(20);
 
     // Replace health bar with red low-health bar
     for (let y = 83; y < 89; y++) {
@@ -1456,6 +1458,7 @@ describe("vision & PID servo", () => {
         enemiesRight: 2,
         enemiesBehind: 0,
         closestEnemyDist: 0.12,
+        enemyAngleDeg: -65,
       }),
       captureTile: (
         _s: HTMLCanvasElement,
@@ -1588,6 +1591,7 @@ describe("vision & PID servo", () => {
           enemiesRight: 0,
           enemiesBehind: 0,
           closestEnemyDist: null,
+          enemyAngleDeg: null,
           objectiveVisible: true,
           objectiveColor: "yellow" as const,
           objectiveAngleDeg: radarCall < 3 ? 55 : 0,
@@ -1683,5 +1687,33 @@ describe("vision & PID servo", () => {
     });
     expect(waitRes?.radarVisible).toBe(true);
     expect(waitCalls).toBeGreaterThanOrEqual(3);
+
+    // Verify retryMission taps BTN.A and waits for radarVisible
+    let retryCalls = 0;
+    const retryEvents: number[] = [];
+    const origTapBtn = gp.tapButton;
+    gp.tapButton = async (btn: number, holdMs?: number, settle?: number) => {
+      retryEvents.push(btn);
+      return origTapBtn(btn, holdMs, settle);
+    };
+    const retryOrch = createGameplayOrchestrator(gp, {
+      ...fakeCapture,
+      readGtavRadar: () => {
+        retryCalls++;
+        return {
+          ...fakeCapture.readGtavRadar(),
+          radarVisible: retryCalls >= 2,
+        };
+      },
+    });
+    const retryRes = await retryOrch.retryMission({
+      tapMs: 15,
+      radarTimeoutMs: 1000,
+      pollMs: 10,
+      settleMs: 10,
+    });
+    expect(retryRes.ok).toBe(true);
+    expect(retryRes.radarVisible).toBe(true);
+    expect(retryEvents).toContain(BTN.A);
   });
 });

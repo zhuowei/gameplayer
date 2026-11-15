@@ -29,6 +29,7 @@ const gameplayApi = {
   switchCharacter: orchestrator.switchCharacter,
   readGtavRadar: orchestrator.readGtavRadar,
   waitForRadar: orchestrator.waitForRadar,
+  retryMission: orchestrator.retryMission,
   getRecentHistory: orchestrator.getRecentHistory,
   hideOverlay: hideSheetOverlay,
   resetRoadModel: orchestrator.resetRoadModel,
