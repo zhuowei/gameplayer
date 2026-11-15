@@ -1557,6 +1557,7 @@ export function analyzeGtavRadarRgba(
   const healthBarVisible = healthPct > 0.03 || redBarRatio > 0.15;
   const lowHealth =
     radarVisible &&
+    healthPct < 0.45 &&
     ((healthBarVisible && healthPct < 0.35) ||
       redBarRatio > 0.25 ||
       redWashRatio > 0.25);

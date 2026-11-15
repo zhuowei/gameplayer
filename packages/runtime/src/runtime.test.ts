@@ -1418,6 +1418,29 @@ describe("vision & PID servo", () => {
     }
     const cutscene = analyzeGtavRadarRgba(rgba, cw, ch);
     expect(cutscene.lowHealth).toBe(false);
+
+    // Flashing red alarm wash with healthy green bar (>= 45%) must not false-trigger lowHealth
+    for (let y = 18; y < 80; y++) {
+      for (let x = 10; x < 95; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 190;
+        rgba[idx + 1] = 20;
+        rgba[idx + 2] = 20;
+        rgba[idx + 3] = 255;
+      }
+    }
+    for (let y = 83; y < 89; y++) {
+      for (let x = 10; x < 53; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 55;
+        rgba[idx + 1] = 195;
+        rgba[idx + 2] = 75;
+        rgba[idx + 3] = 255;
+      }
+    }
+    const redAlarm = analyzeGtavRadarRgba(rgba, cw, ch);
+    expect(redAlarm.healthPct).toBeGreaterThan(0.8);
+    expect(redAlarm.lowHealth).toBe(false);
   });
 
   test("autoCombatSweep pans toward radar flankers and gtavDrive defaults gasButton to RT", async () => {
