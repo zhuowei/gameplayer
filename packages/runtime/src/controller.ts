@@ -1151,44 +1151,49 @@ export function createGameplayOrchestrator(
               Math.abs(radar.enemyAngleDeg) > panDeadbandDeg) ||
               (radar.enemyAngleDeg === null && radar.enemiesAhead === 0))
           ) {
-            const panDir =
-              radar.enemyAngleDeg !== null
-                ? Math.sign(radar.enemyAngleDeg) *
-                  (Math.abs(radar.enemyAngleDeg) > 22 ? 0.85 : 0.48)
-                : radar.enemiesLeft > radar.enemiesRight &&
-                    radar.enemiesLeft > 0
-                  ? -0.85
-                  : radar.enemiesRight > 0
-                    ? 0.85
-                    : radar.enemiesBehind > 0
-                      ? 0.95
-                      : 0;
-            if (panDir !== 0) {
-              const maxPanMs = Math.max(panMs, 650);
-              const stepPanMs = 65;
-              let pannedMs = 0;
-              api.setStick(1, panDir, 0);
-              while (pannedMs < maxPanMs && !shouldAbort()) {
-                await api.sleep(stepPanMs);
-                pannedMs += stepPanMs;
-                const rNow =
-                  surface && typeof eng.readGtavRadar === "function"
-                    ? eng.readGtavRadar(surface)
-                    : null;
-                if (rNow) {
-                  if (
-                    rNow.enemyAngleDeg !== null &&
-                    Math.abs(rNow.enemyAngleDeg) <= panDeadbandDeg
-                  ) {
-                    break;
-                  }
-                  if (rNow.enemyAngleDeg === null && rNow.enemiesAhead > 0) {
-                    break;
-                  }
-                }
+            const maxPanMs = Math.max(panMs, 900);
+            let pannedMs = 0;
+            while (pannedMs < maxPanMs && !shouldAbort()) {
+              const rNow =
+                surface && typeof eng.readGtavRadar === "function"
+                  ? eng.readGtavRadar(surface)
+                  : null;
+              if (!rNow || rNow.enemyPixels === 0) break;
+              if (
+                rNow.enemyAngleDeg !== null &&
+                Math.abs(rNow.enemyAngleDeg) <= panDeadbandDeg
+              ) {
+                break;
               }
+              if (rNow.enemyAngleDeg === null && rNow.enemiesAhead > 0) {
+                break;
+              }
+              const stepDir =
+                rNow.enemyAngleDeg !== null
+                  ? Math.sign(rNow.enemyAngleDeg) *
+                    (Math.abs(rNow.enemyAngleDeg) > 22 ? 0.72 : 0.4)
+                  : rNow.enemiesLeft > rNow.enemiesRight &&
+                      rNow.enemiesLeft > 0
+                    ? -0.75
+                    : rNow.enemiesRight > 0
+                      ? 0.75
+                      : rNow.enemiesBehind > 0
+                        ? 0.9
+                        : 0;
+              if (stepDir === 0) break;
+              const pulseMs =
+                rNow.enemyAngleDeg !== null &&
+                Math.abs(rNow.enemyAngleDeg) <= 22
+                  ? 70
+                  : 110;
+              const settlePauseMs = 90;
+              api.setStick(1, stepDir, 0);
+              await api.sleep(pulseMs);
               api.setStick(1, 0, 0);
+              await api.sleep(settlePauseMs);
+              pannedMs += pulseMs + settlePauseMs;
             }
+            api.setStick(1, 0, 0);
           }
           api.setButton(aimButton, 1);
           await api.sleep(aimSettleMs);
