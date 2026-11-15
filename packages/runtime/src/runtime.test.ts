@@ -1402,6 +1402,19 @@ describe("vision & PID servo", () => {
     const low = analyzeGtavRadarRgba(rgba, cw, ch);
     expect(low.lowHealth).toBe(true);
     expect(low.healthPct).toBeLessThan(0.1);
+
+    // Cutscene / HUD-hidden frame (grey background, no green/red health bar) must not false-trigger lowHealth
+    for (let y = 83; y < 89; y++) {
+      for (let x = 10; x < 53; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 70;
+        rgba[idx + 1] = 75;
+        rgba[idx + 2] = 80;
+        rgba[idx + 3] = 255;
+      }
+    }
+    const cutscene = analyzeGtavRadarRgba(rgba, cw, ch);
+    expect(cutscene.lowHealth).toBe(false);
   });
 
   test("autoCombatSweep pans toward radar flankers and gtavDrive defaults gasButton to RT", async () => {

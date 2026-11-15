@@ -1933,8 +1933,10 @@ self.onmessage = async (ev) => {
     }
     const radarVisible = totalRadar > 0 && nonBlackRadar / totalRadar > 0.2;
     const healthPct = barCols > 0 ? greenCols / barCols : 0;
+    const redBarRatio = barCols > 0 ? redBarCols / barCols : 0;
     const redWashRatio = totalRadar > 0 ? redWash / totalRadar : 0;
-    const lowHealth = radarVisible && (healthPct < 0.35 || barCols > 0 && redBarCols / barCols > 0.25 || redWashRatio > 0.25);
+    const healthBarVisible = healthPct > 0.03 || redBarRatio > 0.15;
+    const lowHealth = radarVisible && (healthBarVisible && healthPct < 0.35 || redBarRatio > 0.25 || redWashRatio > 0.25);
     let objectiveColor = null;
     let objectivePixels = 0;
     let objSumX = 0;
