@@ -3120,17 +3120,19 @@ self.onmessage = async (ev) => {
             }
           }
           if (autoPan && radar && radar.enemiesAhead === 0) {
-            if (radar.enemiesLeft > radar.enemiesRight && radar.enemiesLeft > 0) {
-              api.setStick(1, -0.75, 0);
-              await api.sleep(panMs);
-              api.setStick(1, 0, 0);
-            } else if (radar.enemiesRight > 0) {
-              api.setStick(1, 0.75, 0);
-              await api.sleep(panMs);
-              api.setStick(1, 0, 0);
-            } else if (radar.enemiesBehind > 0) {
-              api.setStick(1, 0.9, 0);
-              await api.sleep(Math.round(panMs * 1.6));
+            const panDir = radar.enemiesLeft > radar.enemiesRight && radar.enemiesLeft > 0 ? -0.85 : radar.enemiesRight > 0 ? 0.85 : radar.enemiesBehind > 0 ? 0.95 : 0;
+            if (panDir !== 0) {
+              const maxPanMs = Math.max(panMs, 650);
+              const stepPanMs = 65;
+              let pannedMs = 0;
+              api.setStick(1, panDir, 0);
+              while (pannedMs < maxPanMs && !shouldAbort()) {
+                await api.sleep(stepPanMs);
+                pannedMs += stepPanMs;
+                const rNow = surface && typeof eng.readGtavRadar === "function" ? eng.readGtavRadar(surface) : null;
+                if (rNow && rNow.enemiesAhead > 0)
+                  break;
+              }
               api.setStick(1, 0, 0);
             }
           }
