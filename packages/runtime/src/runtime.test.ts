@@ -1277,4 +1277,74 @@ describe("vision & PID servo", () => {
     expect(res.stuckDetected).toBe(false);
     expect(res.stopReason).toBe("horizon_complete");
   });
+
+  test("coverPeekBurst, sprintMove, and getRecentHistory track 3D combat/movement safely", async () => {
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv("complete");
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+    const canvas = {} as HTMLCanvasElement;
+    const fakeCapture = {
+      resetTracking() {},
+      findVideoSurface: () => canvas,
+      getSurfaceDimensions: () => ({ w: 64, h: 48 }),
+      sampleAnalysis: () => ({
+        motionScore: 0.05,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadConfidence: 0.5,
+      }),
+      captureTile: (
+        _s: HTMLCanvasElement,
+        tMs: number,
+        axes: number[],
+        buttons: number[],
+        a: {
+          motionScore: number;
+          bannerDelta: number;
+          redAlertRatio: number;
+          roadOffsetX: number;
+          roadConfidence: number;
+        },
+      ) => ({
+        tMs,
+        width: 64,
+        height: 48,
+        canvas,
+        axes,
+        buttons,
+        ...a,
+      }),
+      captureFullFrame: () => canvas,
+    } as unknown as VideoCaptureEngine;
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture);
+    const burstRes = await orch.coverPeekBurst({
+      aimSettleMs: 10,
+      bursts: 2,
+      burstMs: 10,
+      gapMs: 10,
+      showSheetOverlay: false,
+      label: "test-peek",
+    });
+    expect(burstRes.ok).toBe(true);
+    expect(burstRes.finalState.buttons[BTN.LT]).toBe(0);
+    expect(burstRes.finalState.buttons[BTN.RT]).toBe(0);
+
+    const moveRes = await orch.sprintMove({
+      yawX: 0.4,
+      yawMs: 10,
+      durationMs: 30,
+      endCover: true,
+      showSheetOverlay: false,
+      label: "test-sprint",
+    });
+    expect(moveRes.ok).toBe(true);
+    expect(moveRes.finalState.buttons[BTN.A]).toBe(0);
+    expect(moveRes.finalState.buttons[BTN.RB]).toBe(0);
+
+    const history = orch.getRecentHistory();
+    expect(history.length).toBe(2);
+    expect(history[0]?.label).toBe("test-peek");
+    expect(history[1]?.label).toBe("test-sprint");
+  });
 });

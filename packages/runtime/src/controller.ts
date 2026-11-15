@@ -5,10 +5,13 @@ import {
   type DepthEngineStatus,
 } from "./depth";
 import type {
+  ChunkHistoryEntry,
   ChunkOptions,
   ChunkResult,
+  CoverPeekBurstOptions,
   DriveServoOptions,
   FrameSample,
+  SprintMoveOptions,
 } from "./types";
 import {
   buildContactSheetCanvas,
@@ -64,6 +67,9 @@ export interface GameplayOrchestrator {
   ): Promise<ChunkResult>;
   driveServo(options?: DriveServoOptions): Promise<ChunkResult>;
   smartRescue(options?: ChunkOptions): Promise<ChunkResult>;
+  coverPeekBurst(options?: CoverPeekBurstOptions): Promise<ChunkResult>;
+  sprintMove(options?: SprintMoveOptions): Promise<ChunkResult>;
+  getRecentHistory(): ChunkHistoryEntry[];
   hideOverlay(): void;
   resetRoadModel(): void;
   initDepthEngine(): Promise<DepthEngineStatus>;
@@ -90,6 +96,19 @@ export function createGameplayOrchestrator(
 ): GameplayOrchestrator {
   let engine: VideoCaptureEngine | null = captureEngine ?? null;
   let depth: DepthEngineLike | null = depthEngine ?? null;
+  const recentHistory: ChunkHistoryEntry[] = [];
+  const MAX_HISTORY_ENTRIES = 12;
+
+  function recordHistory(entry: ChunkHistoryEntry): void {
+    recentHistory.push(entry);
+    if (recentHistory.length > MAX_HISTORY_ENTRIES) {
+      recentHistory.shift();
+    }
+  }
+
+  function getRecentHistory(): ChunkHistoryEntry[] {
+    return recentHistory.slice();
+  }
 
   function getEngine(): VideoCaptureEngine {
     if (!engine) engine = new VideoCaptureEngine();
@@ -185,6 +204,16 @@ export function createGameplayOrchestrator(
         sheetDataUrl = sheet.toDataURL("image/jpeg", 0.82);
       }
     }
+
+    recordHistory({
+      timestamp: Date.now(),
+      label,
+      stopReason,
+      durationMs,
+      avgMotion,
+      stuckDetected,
+      ok,
+    });
 
     return {
       ok,
@@ -821,6 +850,134 @@ export function createGameplayOrchestrator(
     );
   }
 
+  /**
+   * 3rd-person cover-peek-fire burst that always releases aim/fire before
+   * returning so the character ducks back into cover during LLM turn gaps.
+   */
+  async function coverPeekBurst(
+    options: CoverPeekBurstOptions = {},
+  ): Promise<ChunkResult> {
+    const {
+      aimButton = BTN.LT,
+      fireButton = BTN.RT,
+      coverButton = BTN.RB,
+      enterCover = false,
+      aimSettleMs = 180,
+      aimX = 0,
+      aimY = 0,
+      aimNudgeMs = 0,
+      bursts = 2,
+      burstMs = 220,
+      gapMs = 120,
+      special = false,
+      unpause = false,
+      pause = false,
+      stopOnStuck = false,
+      label = "cover-peek",
+      ...rest
+    } = options;
+
+    return runChunk(
+      async ({ api, shouldAbort }) => {
+        if (special) {
+          api.setButton(BTN.L3, 1);
+          api.setButton(BTN.R3, 1);
+          await api.sleep(90);
+          api.setButton(BTN.L3, 0);
+          api.setButton(BTN.R3, 0);
+          await api.sleep(80);
+        }
+        if (enterCover) {
+          await api.tapButton(coverButton, 80, 140);
+        }
+        api.setButton(aimButton, 1);
+        await api.sleep(aimSettleMs);
+        if (aimNudgeMs > 0 && (aimX !== 0 || aimY !== 0)) {
+          api.setStick(1, aimX, aimY);
+          await api.sleep(aimNudgeMs);
+          api.setStick(1, 0, 0);
+        }
+        for (let i = 0; i < bursts && !shouldAbort(); i++) {
+          api.setButton(fireButton, 1);
+          await api.sleep(burstMs);
+          api.setButton(fireButton, 0);
+          if (i + 1 < bursts && gapMs > 0) {
+            await api.sleep(gapMs);
+          }
+        }
+        api.setStick(1, 0, 0);
+        api.setButton(fireButton, 0);
+        api.setButton(aimButton, 0);
+        await api.sleep(100);
+      },
+      {
+        ...rest,
+        unpause,
+        pause,
+        stopOnStuck,
+        label,
+      },
+    );
+  }
+
+  /**
+   * 3D on-foot camera-yaw + sprint movement with wall-snag early abort and
+   * optional end-of-chunk cover snap.
+   */
+  async function sprintMove(
+    options: SprintMoveOptions = {},
+  ): Promise<ChunkResult> {
+    const {
+      yawX = 0,
+      yawY = 0,
+      yawMs = 0,
+      moveX = 0,
+      moveY = -1,
+      sprint = true,
+      sprintButton = BTN.A,
+      durationMs = 1200,
+      endCover = false,
+      coverButton = BTN.RB,
+      unpause = false,
+      pause = false,
+      label = "sprint-move",
+      ...rest
+    } = options;
+
+    return runChunk(
+      async ({ api, shouldAbort }) => {
+        if (yawMs > 0 && (yawX !== 0 || yawY !== 0)) {
+          api.setStick(1, yawX, yawY);
+          await api.sleep(yawMs);
+          api.setStick(1, 0, 0);
+          await api.sleep(50);
+        }
+        api.setStick(0, moveX, moveY);
+        if (sprint) {
+          api.setButton(sprintButton, 1);
+        }
+        const stepMs = 150;
+        const steps = Math.max(1, Math.ceil(durationMs / stepMs));
+        for (let i = 0; i < steps && !shouldAbort(); i++) {
+          await api.sleep(Math.min(stepMs, Math.max(50, durationMs - i * stepMs)));
+        }
+        if (sprint) {
+          api.setButton(sprintButton, 0);
+        }
+        api.setStick(0, 0, 0);
+        if (endCover) {
+          await api.tapButton(coverButton, 80, 120);
+        }
+      },
+      {
+        ...rest,
+        unpause,
+        pause,
+        label,
+      },
+    );
+  }
+
   function inspectFrame() {
     const eng = getEngine();
     const dEngine = getDepthEngine();
@@ -860,6 +1017,9 @@ export function createGameplayOrchestrator(
     runChunk,
     driveServo,
     smartRescue,
+    coverPeekBurst,
+    sprintMove,
+    getRecentHistory,
     hideOverlay: hideSheetOverlay,
     resetRoadModel,
     initDepthEngine,

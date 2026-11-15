@@ -140,3 +140,41 @@ export interface ChunkResult {
   /** Compact JPEG data URL of the annotated contact sheet (if requested/created) */
   sheetDataUrl?: string;
 }
+
+export interface CoverPeekBurstOptions extends ChunkOptions {
+  aimButton?: number;
+  fireButton?: number;
+  coverButton?: number;
+  enterCover?: boolean;
+  aimSettleMs?: number;
+  aimX?: number;
+  aimY?: number;
+  aimNudgeMs?: number;
+  bursts?: number;
+  burstMs?: number;
+  gapMs?: number;
+  special?: boolean;
+}
+
+export interface SprintMoveOptions extends ChunkOptions {
+  yawX?: number;
+  yawY?: number;
+  yawMs?: number;
+  moveX?: number;
+  moveY?: number;
+  sprint?: boolean;
+  sprintButton?: number;
+  durationMs?: number;
+  endCover?: boolean;
+  coverButton?: number;
+}
+
+export interface ChunkHistoryEntry {
+  timestamp: number;
+  label: string;
+  stopReason: string;
+  durationMs: number;
+  avgMotion: number;
+  stuckDetected: boolean;
+  ok: boolean;
+}
