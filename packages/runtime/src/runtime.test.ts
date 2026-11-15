@@ -1764,5 +1764,27 @@ describe("vision & PID servo", () => {
       showSheetOverlay: false,
     });
     expect(friendlyFires.length).toBe(0);
+
+    // Verify requireEnemyReticle skips RT when reticle stays neutral
+    const neutralOrch = createGameplayOrchestrator(gp, {
+      ...fakeCapture,
+      readGtavReticle: () => ({
+        state: "neutral" as const,
+        redPixels: 0,
+        greenPixels: 0,
+        whitePixels: 10,
+      }),
+    });
+    await neutralOrch.autoCombatSweep({
+      maxCycles: 1,
+      autoPan: false,
+      verifyReticle: true,
+      requireEnemyReticle: true,
+      reticleScanMs: 40,
+      aimSettleMs: 10,
+      burstMs: 20,
+      showSheetOverlay: false,
+    });
+    expect(friendlyFires.length).toBe(0);
   });
 });

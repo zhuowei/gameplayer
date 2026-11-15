@@ -226,6 +226,7 @@ export interface AutoCombatSweepOptions extends ChunkOptions {
   panMs?: number;
   panDeadbandDeg?: number;
   verifyReticle?: boolean;
+  requireEnemyReticle?: boolean;
   reticleScanMs?: number;
   stopWhenClear?: boolean;
 }

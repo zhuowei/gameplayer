@@ -3139,6 +3139,7 @@ self.onmessage = async (ev) => {
         panMs = 180,
         panDeadbandDeg = 8,
         verifyReticle = true,
+        requireEnemyReticle = false,
         reticleScanMs = 900,
         stopWhenClear = true,
         unpause = false,
@@ -3238,7 +3239,7 @@ self.onmessage = async (ev) => {
               }
               api.setStick(1, 0, 0);
             }
-            if (ret.state === "friendly") {
+            if (ret.state === "friendly" || requireEnemyReticle && ret.state !== "enemy") {
               allowFire = false;
             }
           }
