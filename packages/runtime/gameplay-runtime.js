@@ -1824,7 +1824,13 @@ self.onmessage = async (ev) => {
         enemiesLeft: 0,
         enemiesRight: 0,
         enemiesBehind: 0,
-        closestEnemyDist: null
+        closestEnemyDist: null,
+        objectiveVisible: false,
+        objectiveColor: null,
+        objectiveAngleDeg: null,
+        objectiveDist: null,
+        objectivePixels: 0,
+        gpsSteerBias: 0
       };
     }
     const rx0 = Math.floor(cw * 0.075);
@@ -1842,6 +1848,17 @@ self.onmessage = async (ev) => {
     let enemiesRight = 0;
     let enemiesBehind = 0;
     let minDist = Infinity;
+    let yellowCount = 0;
+    let yellowSumX = 0;
+    let yellowSumY = 0;
+    let greenCount = 0;
+    let greenSumX = 0;
+    let greenSumY = 0;
+    let blueCount = 0;
+    let blueSumX = 0;
+    let blueSumY = 0;
+    let gpsCount = 0;
+    let gpsSumDx = 0;
     for (let y = ry0;y < ry1; y++) {
       for (let x = rx0;x < rx1; x++) {
         const idx = (y * cw + x) * 4;
@@ -1869,6 +1886,22 @@ self.onmessage = async (ev) => {
           } else {
             enemiesRight++;
           }
+        } else if (r > 195 && g > 155 && b < 95 && r - b > 105 && g - b > 75) {
+          yellowCount++;
+          yellowSumX += x;
+          yellowSumY += y;
+        } else if (g > 170 && r < 95 && b < 110 && g - r > 75) {
+          greenCount++;
+          greenSumX += x;
+          greenSumY += y;
+        } else if (b > 190 && g > 115 && r < 90 && b - r > 100) {
+          blueCount++;
+          blueSumX += x;
+          blueSumY += y;
+        }
+        if (y < py && r > 135 && b > 165 && g < 110) {
+          gpsCount++;
+          gpsSumDx += x - px;
         }
       }
     }
@@ -1902,6 +1935,43 @@ self.onmessage = async (ev) => {
     const healthPct = barCols > 0 ? greenCols / barCols : 0;
     const redWashRatio = totalRadar > 0 ? redWash / totalRadar : 0;
     const lowHealth = radarVisible && (healthPct < 0.35 || barCols > 0 && redBarCols / barCols > 0.25 || redWashRatio > 0.25);
+    let objectiveColor = null;
+    let objectivePixels = 0;
+    let objSumX = 0;
+    let objSumY = 0;
+    if (yellowCount >= 3) {
+      objectiveColor = "yellow";
+      objectivePixels = yellowCount;
+      objSumX = yellowSumX;
+      objSumY = yellowSumY;
+    } else if (greenCount >= 4) {
+      objectiveColor = "green";
+      objectivePixels = greenCount;
+      objSumX = greenSumX;
+      objSumY = greenSumY;
+    } else if (blueCount >= 4) {
+      objectiveColor = "blue";
+      objectivePixels = blueCount;
+      objSumX = blueSumX;
+      objSumY = blueSumY;
+    }
+    const objectiveVisible = objectiveColor !== null && objectivePixels > 0;
+    let objectiveAngleDeg = null;
+    let objectiveDist = null;
+    if (objectiveVisible) {
+      const cx = objSumX / objectivePixels;
+      const cy = objSumY / objectivePixels;
+      const dx = cx - px;
+      const dy = cy - py;
+      objectiveAngleDeg = Math.atan2(dx, -dy) * (180 / Math.PI);
+      objectiveDist = Math.hypot(dx, dy) / cw;
+    }
+    let gpsSteerBias = 0;
+    if (gpsCount >= 4) {
+      gpsSteerBias = Math.max(-1, Math.min(1, gpsSumDx / gpsCount / (cw * 0.35)));
+    } else if (objectiveAngleDeg !== null) {
+      gpsSteerBias = Math.max(-1, Math.min(1, objectiveAngleDeg / 90));
+    }
     return {
       radarVisible,
       healthPct,
@@ -1911,7 +1981,13 @@ self.onmessage = async (ev) => {
       enemiesLeft,
       enemiesRight,
       enemiesBehind,
-      closestEnemyDist: Number.isFinite(minDist) ? minDist : null
+      closestEnemyDist: Number.isFinite(minDist) ? minDist : null,
+      objectiveVisible,
+      objectiveColor,
+      objectiveAngleDeg,
+      objectiveDist,
+      objectivePixels,
+      gpsSteerBias
     };
   }
 
@@ -2495,6 +2571,7 @@ self.onmessage = async (ev) => {
         throttleModulation = true,
         autoCornerBrake = true,
         steerBias = 0,
+        steerBiasFn,
         depthSteerHint,
         depthHintWeight = 0.3,
         stopOnBannerChange = false,
@@ -2629,7 +2706,8 @@ self.onmessage = async (ev) => {
             const w = clamp(depthHintWeight, 0, 1);
             visualTarget = (1 - w) * visualTarget + w * clamp(depthSteerHint, -1, 1);
           }
-          const target = clamp(visualTarget + steerBias, -1, 1);
+          const dynamicBias = typeof steerBiasFn === "function" ? steerBiasFn(surface) : 0;
+          const target = clamp(visualTarget + steerBias + dynamicBias, -1, 1);
           const pid = computePidSteer(target, pidState, dtMs / 1000, kp, kd, maxSteer, 5.5);
           pidState = pid.nextState;
           gamepad.setStick(0, pid.steer, 0);
@@ -2989,6 +3067,7 @@ self.onmessage = async (ev) => {
         autoSpecialOnLowHealth = true,
         autoPan = true,
         panMs = 180,
+        stopWhenClear = true,
         unpause = false,
         pause = false,
         stopOnStuck = false,
@@ -2999,6 +3078,8 @@ self.onmessage = async (ev) => {
         const eng = getEngine();
         const surface = eng.findVideoSurface();
         let specialUsed = false;
+        let sawEnemies = false;
+        let clearStreak = 0;
         const startAt = performance.now();
         const triggerSpecial = async () => {
           specialUsed = true;
@@ -3019,6 +3100,16 @@ self.onmessage = async (ev) => {
           if (performance.now() - startAt >= maxDurationMs)
             break;
           const radar = surface && typeof eng.readGtavRadar === "function" ? eng.readGtavRadar(surface) : null;
+          if (radar && radar.radarVisible) {
+            if (radar.enemyPixels > 0) {
+              sawEnemies = true;
+              clearStreak = 0;
+            } else if (stopWhenClear && sawEnemies) {
+              clearStreak++;
+              if (clearStreak >= 2)
+                break;
+            }
+          }
           if (radar && radar.lowHealth) {
             if (autoSpecialOnLowHealth && !specialUsed) {
               await triggerSpecial();
@@ -3062,14 +3153,150 @@ self.onmessage = async (ev) => {
         label
       });
     }
+    async function navigateToObjective(options = {}) {
+      const {
+        maxDurationMs = 5000,
+        tickMs = 65,
+        sprint = true,
+        sprintButton = BTN.A,
+        stopDist = 0.1,
+        stopOnEnemy = true,
+        enemyThreshold = 6,
+        stopOnLowHealth = true,
+        autoSpecialOnLowHealth = true,
+        endCover = false,
+        coverButton = BTN.RB,
+        yawGain = 1,
+        unstickStrafe = true,
+        unpause = false,
+        pause = false,
+        stopOnStuck = false,
+        label = "nav-objective",
+        ...rest
+      } = options;
+      let customStopReason = "";
+      const result = await runChunk(async ({ api, shouldAbort }) => {
+        const eng = getEngine();
+        const surface = eng.findVideoSurface();
+        let specialUsed = false;
+        let lowMotionMs = 0;
+        let strafeDir = 1;
+        let strafeUntil = 0;
+        const startAt = performance.now();
+        const triggerSpecial = async () => {
+          specialUsed = true;
+          api.setButton(BTN.L3, 1);
+          api.setButton(BTN.R3, 1);
+          await api.sleep(90);
+          api.setButton(BTN.L3, 0);
+          api.setButton(BTN.R3, 0);
+          await api.sleep(40);
+        };
+        while (!shouldAbort()) {
+          const now = performance.now();
+          if (now - startAt >= maxDurationMs) {
+            customStopReason = "max_duration";
+            break;
+          }
+          const radar = surface && typeof eng.readGtavRadar === "function" ? eng.readGtavRadar(surface) : null;
+          if (radar && radar.lowHealth) {
+            if (autoSpecialOnLowHealth && !specialUsed) {
+              await triggerSpecial();
+            } else if (stopOnLowHealth) {
+              customStopReason = "low_health";
+              break;
+            }
+          }
+          if (stopOnEnemy && radar && radar.radarVisible && radar.enemyPixels >= enemyThreshold) {
+            customStopReason = "enemy_detected";
+            break;
+          }
+          if (radar && radar.objectiveVisible && radar.objectiveDist !== null && radar.objectiveDist <= stopDist) {
+            customStopReason = "reached_objective";
+            break;
+          }
+          let yawX = 0;
+          let moveY = -1;
+          let moveX = 0;
+          if (radar && radar.objectiveVisible && radar.objectiveAngleDeg !== null) {
+            const ang = radar.objectiveAngleDeg;
+            if (Math.abs(ang) > 6) {
+              yawX = clamp(ang / 65 * yawGain, -0.95, 0.95);
+            }
+            if (Math.abs(ang) > 105) {
+              moveY = 0;
+            }
+          }
+          if (unstickStrafe && moveY < 0 && surface) {
+            const sample = eng.sampleAnalysis(surface);
+            if (sample.motionScore < 0.012 && now - startAt > 500) {
+              lowMotionMs += tickMs;
+            } else {
+              lowMotionMs = 0;
+            }
+            if (lowMotionMs >= 450 && now >= strafeUntil) {
+              strafeDir = depthEngine?.isReady() && depthEngine.getLastResult() ? depthEngine.getLastResult().corridorOffsetX >= 0 ? 1 : -1 : -strafeDir;
+              strafeUntil = now + 350;
+              lowMotionMs = 0;
+            }
+            if (now < strafeUntil) {
+              moveX = 0.85 * strafeDir;
+              moveY = -0.35;
+            }
+          }
+          api.setStick(1, yawX, 0);
+          api.setStick(0, moveX, moveY);
+          if (sprint && moveY < -0.2) {
+            api.setButton(sprintButton, 1);
+          } else if (sprint) {
+            api.setButton(sprintButton, 0);
+          }
+          await api.sleep(tickMs);
+        }
+        if (sprint) {
+          api.setButton(sprintButton, 0);
+        }
+        api.setStick(0, 0, 0);
+        api.setStick(1, 0, 0);
+        if (endCover) {
+          await api.tapButton(coverButton, 80, 120);
+        }
+      }, {
+        ...rest,
+        unpause,
+        pause,
+        stopOnStuck,
+        label
+      });
+      if (customStopReason) {
+        return { ...result, stopReason: customStopReason };
+      }
+      return result;
+    }
     async function gtavDrive(options = {}) {
+      const {
+        useRadarGps = true,
+        radarGpsWeight = 0.35,
+        steerBiasFn,
+        ...rest
+      } = options;
+      const eng = getEngine();
+      const gpsBiasFn = steerBiasFn ?? (useRadarGps ? (surface) => {
+        if (typeof eng.readGtavRadar !== "function")
+          return 0;
+        const radar = eng.readGtavRadar(surface);
+        if (!radar || !radar.radarVisible)
+          return 0;
+        return clamp(radar.gpsSteerBias * radarGpsWeight, -0.45, 0.45);
+      } : undefined);
       return driveServo({
         gasButton: BTN.RT,
         unpause: false,
         pause: false,
         stopOnRaceFinish: false,
         label: "gtav-drive",
-        ...options
+        steerBiasFn: gpsBiasFn,
+        ...rest
       });
     }
     return {
@@ -3079,6 +3306,7 @@ self.onmessage = async (ev) => {
       smartRescue,
       coverPeekBurst,
       sprintMove,
+      navigateToObjective,
       autoCombatSweep,
       readGtavRadar,
       getRecentHistory,

@@ -1436,6 +1436,12 @@ export function analyzeGtavRadarRgba(
       enemiesRight: 0,
       enemiesBehind: 0,
       closestEnemyDist: null,
+      objectiveVisible: false,
+      objectiveColor: null,
+      objectiveAngleDeg: null,
+      objectiveDist: null,
+      objectivePixels: 0,
+      gpsSteerBias: 0,
     };
   }
 
@@ -1456,6 +1462,18 @@ export function analyzeGtavRadarRgba(
   let enemiesRight = 0;
   let enemiesBehind = 0;
   let minDist = Infinity;
+
+  let yellowCount = 0;
+  let yellowSumX = 0;
+  let yellowSumY = 0;
+  let greenCount = 0;
+  let greenSumX = 0;
+  let greenSumY = 0;
+  let blueCount = 0;
+  let blueSumX = 0;
+  let blueSumY = 0;
+  let gpsCount = 0;
+  let gpsSumDx = 0;
 
   for (let y = ry0; y < ry1; y++) {
     for (let x = rx0; x < rx1; x++) {
@@ -1481,6 +1499,22 @@ export function analyzeGtavRadarRgba(
         } else {
           enemiesRight++;
         }
+      } else if (r > 195 && g > 155 && b < 95 && r - b > 105 && g - b > 75) {
+        yellowCount++;
+        yellowSumX += x;
+        yellowSumY += y;
+      } else if (g > 170 && r < 95 && b < 110 && g - r > 75) {
+        greenCount++;
+        greenSumX += x;
+        greenSumY += y;
+      } else if (b > 190 && g > 115 && r < 90 && b - r > 100) {
+        blueCount++;
+        blueSumX += x;
+        blueSumY += y;
+      }
+      if (y < py && r > 135 && b > 165 && g < 110) {
+        gpsCount++;
+        gpsSumDx += x - px;
       }
     }
   }
@@ -1518,6 +1552,46 @@ export function analyzeGtavRadarRgba(
       (barCols > 0 && redBarCols / barCols > 0.25) ||
       redWashRatio > 0.25);
 
+  let objectiveColor: "yellow" | "green" | "blue" | null = null;
+  let objectivePixels = 0;
+  let objSumX = 0;
+  let objSumY = 0;
+  if (yellowCount >= 3) {
+    objectiveColor = "yellow";
+    objectivePixels = yellowCount;
+    objSumX = yellowSumX;
+    objSumY = yellowSumY;
+  } else if (greenCount >= 4) {
+    objectiveColor = "green";
+    objectivePixels = greenCount;
+    objSumX = greenSumX;
+    objSumY = greenSumY;
+  } else if (blueCount >= 4) {
+    objectiveColor = "blue";
+    objectivePixels = blueCount;
+    objSumX = blueSumX;
+    objSumY = blueSumY;
+  }
+
+  const objectiveVisible = objectiveColor !== null && objectivePixels > 0;
+  let objectiveAngleDeg: number | null = null;
+  let objectiveDist: number | null = null;
+  if (objectiveVisible) {
+    const cx = objSumX / objectivePixels;
+    const cy = objSumY / objectivePixels;
+    const dx = cx - px;
+    const dy = cy - py;
+    objectiveAngleDeg = Math.atan2(dx, -dy) * (180 / Math.PI);
+    objectiveDist = Math.hypot(dx, dy) / cw;
+  }
+
+  let gpsSteerBias = 0;
+  if (gpsCount >= 4) {
+    gpsSteerBias = Math.max(-1, Math.min(1, gpsSumDx / gpsCount / (cw * 0.35)));
+  } else if (objectiveAngleDeg !== null) {
+    gpsSteerBias = Math.max(-1, Math.min(1, objectiveAngleDeg / 90));
+  }
+
   return {
     radarVisible,
     healthPct,
@@ -1528,6 +1602,12 @@ export function analyzeGtavRadarRgba(
     enemiesRight,
     enemiesBehind,
     closestEnemyDist: Number.isFinite(minDist) ? minDist : null,
+    objectiveVisible,
+    objectiveColor,
+    objectiveAngleDeg,
+    objectiveDist,
+    objectivePixels,
+    gpsSteerBias,
   };
 }
 

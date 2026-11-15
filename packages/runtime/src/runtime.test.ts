@@ -1509,4 +1509,123 @@ describe("vision & PID servo", () => {
     expect(rageSprint.ok).toBe(true);
     expect(sawL3R3).toBe(true);
   });
+
+  test("analyzeGtavRadarRgba detects yellow objective blip angle/distance and navigateToObjective servos to it", async () => {
+    const cw = 128;
+    const ch = 96;
+    const rgba = new Uint8ClampedArray(cw * ch * 4);
+    for (let y = 18; y < 80; y++) {
+      for (let x = 10; x < 98; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 70;
+        rgba[idx + 1] = 75;
+        rgba[idx + 2] = 80;
+        rgba[idx + 3] = 255;
+      }
+    }
+    // Place yellow objective blip to the right of player (px ~ 54.8, py ~ 62.4)
+    for (let y = 48; y < 52; y++) {
+      for (let x = 76; x < 80; x++) {
+        const idx = (y * cw + x) * 4;
+        rgba[idx] = 235;
+        rgba[idx + 1] = 195;
+        rgba[idx + 2] = 35;
+        rgba[idx + 3] = 255;
+      }
+    }
+    const objReading = analyzeGtavRadarRgba(rgba, cw, ch);
+    expect(objReading.objectiveVisible).toBe(true);
+    expect(objReading.objectiveColor).toBe("yellow");
+    expect(objReading.objectiveAngleDeg).toBeGreaterThan(30);
+    expect(objReading.objectiveDist).toBeGreaterThan(0.15);
+    expect(objReading.gpsSteerBias).toBeGreaterThan(0.3);
+
+    const { mockWindow, mockNav, mockDoc } = createMockBrowserEnv("complete");
+    const gp = createGamepadController(mockWindow, mockNav, mockDoc);
+    const canvas = {} as HTMLCanvasElement;
+    const yawValues: number[] = [];
+    const origSetStick = gp.setStick;
+    gp.setStick = (idx: number, x: number, y: number) => {
+      origSetStick(idx, x, y);
+      if (idx === 1 && x !== 0) yawValues.push(x);
+    };
+
+    let radarCall = 0;
+    const fakeCapture = {
+      resetTracking() {},
+      findVideoSurface: () => canvas,
+      getSurfaceDimensions: () => ({ w: 64, h: 48 }),
+      sampleAnalysis: () => ({
+        motionScore: 0.06,
+        bannerDelta: 0,
+        redAlertRatio: 0,
+        roadOffsetX: 0,
+        roadCurvature: 0,
+        roadConfidence: 0.8,
+      }),
+      readGtavRadar: () => {
+        radarCall++;
+        return {
+          radarVisible: true,
+          healthPct: 0.9,
+          lowHealth: false,
+          enemyPixels: 0,
+          enemiesAhead: 0,
+          enemiesLeft: 0,
+          enemiesRight: 0,
+          enemiesBehind: 0,
+          closestEnemyDist: null,
+          objectiveVisible: true,
+          objectiveColor: "yellow" as const,
+          objectiveAngleDeg: radarCall < 3 ? 55 : 0,
+          objectiveDist: radarCall < 3 ? 0.28 : 0.06,
+          objectivePixels: 16,
+          gpsSteerBias: radarCall < 3 ? 0.6 : 0,
+        };
+      },
+      captureTile: (_surface: any, tMs: number, axes: number[], buttons: number[], analysis: any) => ({
+        tMs,
+        width: 64,
+        height: 48,
+        canvas: {} as any,
+        axes: [...axes],
+        buttons: [...buttons],
+        motionScore: analysis.motionScore,
+        bannerDelta: analysis.bannerDelta,
+        redAlertRatio: analysis.redAlertRatio,
+        roadOffsetX: analysis.roadOffsetX,
+        roadConfidence: analysis.roadConfidence,
+      }),
+    } as any;
+
+    const orch = createGameplayOrchestrator(gp, fakeCapture);
+    const navRes = await orch.navigateToObjective({
+      maxDurationMs: 400,
+      tickMs: 15,
+      stopDist: 0.1,
+      showSheetOverlay: false,
+    });
+    expect(navRes.ok).toBe(true);
+    expect(navRes.stopReason).toBe("reached_objective");
+    expect(yawValues.some((x) => x > 0.3)).toBe(true);
+
+    // Also verify stopOnEnemy aborts cleanly
+    const enemyCapture = {
+      ...fakeCapture,
+      readGtavRadar: () => ({
+        ...fakeCapture.readGtavRadar(),
+        enemyPixels: 12,
+        enemiesAhead: 12,
+        objectiveDist: 0.35,
+      }),
+    };
+    const orchEnemy = createGameplayOrchestrator(gp, enemyCapture);
+    const enemyStop = await orchEnemy.navigateToObjective({
+      maxDurationMs: 400,
+      tickMs: 15,
+      stopOnEnemy: true,
+      showSheetOverlay: false,
+    });
+    expect(enemyStop.stopReason).toBe("enemy_detected");
+  });
 });

@@ -44,17 +44,19 @@ Empirical notes and control bindings for playing unmodified *Grand Theft Auto V*
 Always prefer these in-page closed-loop helpers (added in `2b71837`, `44b2e74`, `18fbd6d`, and `513e8a1`) over open-loop `setStick`/`sleep` sequences so the character reacts within `<200ms` and never sits exposed during LLM turn gaps:
 
 1. **`window.gameplayApi.readGtavRadar()`**:
-   - Crops the bottom-left minimap (`[0..0.20, 0.76..1.0]` at `128×96`) and returns `{ radarVisible, healthPct, lowHealth, enemyPixels, enemiesAhead, enemiesLeft, enemiesRight, enemiesBehind, closestEnemyDist }`.
-   - Call before sprinting out of cover so flanking cops (`enemiesLeft` / `enemiesRight`) are cleared first.
-2. **`window.gameplayApi.autoCombatSweep(options?)`**:
-   - Closed-loop multi-cycle cover peek-fire (`LT` lock-on + `RT` burst + duck pause) with `maxCycles`, `maxDurationMs`, `aimSettleMs`, `burstMs`, `duckMs`, `enterCover`, `special`, `autoSpecialOnLowHealth`, `autoPan`, and `panMs`.
+   - Crops the bottom-left minimap (`[0..0.20, 0.76..1.0]` at `128×96`) and returns `{ radarVisible, healthPct, lowHealth, enemyPixels, enemiesAhead, enemiesLeft, enemiesRight, enemiesBehind, closestEnemyDist, objectiveVisible, objectiveColor, objectiveAngleDeg, objectiveDist, objectivePixels, gpsSteerBias }`.
+   - Call before sprinting out of cover so flanking cops (`enemiesLeft` / `enemiesRight`) are cleared first, or to inspect `objectiveAngleDeg` (`0°` ahead, `+90°` right, `-90°` left) and `objectiveDist`.
+2. **`window.gameplayApi.navigateToObjective(options?)`**:
+   - Closed-loop ~15 Hz on-foot navigation toward the minimap objective blip (`yellow`/`green`/`blue`): continuously yaws `Right Stick` toward `objectiveAngleDeg`, sprints forward (`BTN.A` + `Left Stick y: -1`), pauses forward motion while spinning if `|objectiveAngleDeg| > 105°`, strafes briefly if snagged on a doorway (`unstickStrafe: true`), and stops early with `stopReason` `"reached_objective"` (`objectiveDist <= stopDist`), `"enemy_detected"` (`stopOnEnemy: true`, `enemyThreshold: 6`), or `"low_health"` (after triggering `L3+R3` Special if `autoSpecialOnLowHealth: true`).
+3. **`window.gameplayApi.autoCombatSweep(options?)`**:
+   - Closed-loop multi-cycle cover peek-fire (`LT` lock-on + `RT` burst + duck pause) with `maxCycles`, `maxDurationMs`, `aimSettleMs`, `burstMs`, `duckMs`, `enterCover`, `special`, `autoSpecialOnLowHealth`, `autoPan`, `panMs`, and `stopWhenClear` (default `true`: stops early after 2 consecutive zero-enemy radar checks once enemies were engaged).
    - Checks `readGtavRadar()` before each burst: if `enemiesAhead === 0` and `autoPan: true` (default), pans `Right Stick` (`panMs: 180` default) toward `enemiesLeft` / `enemiesRight` / `enemiesBehind` before pressing `LT`; triggers `L3 + R3` Special on `lowHealth` (or aborts into cover), and always releases `LT`/`RT` before returning so the character stays safely behind cover while the LLM inspects the screenshot.
-3. **`window.gameplayApi.sprintMove(options?)`**:
+4. **`window.gameplayApi.sprintMove(options?)`**:
    - Pre-move camera yaw (`yawX`, `yawY`, `yawMs`) + `BTN.A` sprint (`moveX`, `moveY`, `durationMs`) with `shouldAbort()` wall-snag early stop and optional `endCover: true` (`RB` snap at destination).
    - Supports `special: true` (`L3 + R3` before sprinting) and checks `readGtavRadar()` every `150ms` mid-sprint (`abortOnLowHealth: true`, `autoSpecialOnLowHealth: true` by default): if health drops to red mid-sprint, triggers Rage (`L3+R3`) if unused or aborts early and snaps into cover (`RB`).
-4. **`window.gameplayApi.coverPeekBurst(options?)`**:
+5. **`window.gameplayApi.coverPeekBurst(options?)`**:
    - Single-exchange cover-safe `LT` aim + optional Right Stick nudge (`aimX`, `aimY`, `aimNudgeMs`) + `RT` bursts + optional `special: true`, guaranteed to release `LT` and `RT` before returning.
-5. **`window.gameplayApi.gtavDrive(options?)`**:
-   - Safe GTA V vehicle wrapper around `driveServo()` defaulting `{ gasButton: BTN.RT, unpause: false, pause: false, stopOnRaceFinish: false }` so `BTN.Y` (exit vehicle) is never pressed.
-6. **`window.gameplayApi.getRecentHistory()`**:
+6. **`window.gameplayApi.gtavDrive(options?)`**:
+   - Safe GTA V vehicle wrapper around `driveServo()` defaulting `{ gasButton: BTN.RT, unpause: false, pause: false, stopOnRaceFinish: false, useRadarGps: true, radarGpsWeight: 0.35 }` so `BTN.Y` (exit vehicle) is never pressed and minimap GPS/objective steering bias is blended into road-following.
+7. **`window.gameplayApi.getRecentHistory()`**:
    - Returns the last 12 chunk telemetry entries (`timestamp`, `label`, `stopReason`, `durationMs`, `avgMotion`, `stuckDetected`, `ok`) for quick post-mortem checks without video encoding.

@@ -88,6 +88,8 @@ export interface DriveServoOptions extends ChunkOptions {
   autoCornerBrake?: boolean;
   /** Optional additive steering bias (-1..1) */
   steerBias?: number;
+  /** Optional dynamic steering bias callback evaluated each tick */
+  steerBiasFn?: (surface: HTMLCanvasElement | HTMLVideoElement) => number;
   /** Optional 3D free-space / minimap steering target (-1..1) from host `perceive` CLI */
   depthSteerHint?: number;
   /** Blend weight [0..1] for depthSteerHint when provided (default: 0.30) */
@@ -192,6 +194,12 @@ export interface GtavRadarReading {
   enemiesRight: number;
   enemiesBehind: number;
   closestEnemyDist: number | null;
+  objectiveVisible: boolean;
+  objectiveColor: "yellow" | "green" | "blue" | null;
+  objectiveAngleDeg: number | null;
+  objectiveDist: number | null;
+  objectivePixels: number;
+  gpsSteerBias: number;
 }
 
 export interface AutoCombatSweepOptions extends ChunkOptions {
@@ -208,4 +216,26 @@ export interface AutoCombatSweepOptions extends ChunkOptions {
   autoSpecialOnLowHealth?: boolean;
   autoPan?: boolean;
   panMs?: number;
+  stopWhenClear?: boolean;
+}
+
+export interface NavigateToObjectiveOptions extends ChunkOptions {
+  maxDurationMs?: number;
+  tickMs?: number;
+  sprint?: boolean;
+  sprintButton?: number;
+  stopDist?: number;
+  stopOnEnemy?: boolean;
+  enemyThreshold?: number;
+  stopOnLowHealth?: boolean;
+  autoSpecialOnLowHealth?: boolean;
+  endCover?: boolean;
+  coverButton?: number;
+  yawGain?: number;
+  unstickStrafe?: boolean;
+}
+
+export interface GtavDriveOptions extends DriveServoOptions {
+  useRadarGps?: boolean;
+  radarGpsWeight?: number;
 }

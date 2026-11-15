@@ -12,7 +12,9 @@ import type {
   CoverPeekBurstOptions,
   DriveServoOptions,
   FrameSample,
+  GtavDriveOptions,
   GtavRadarReading,
+  NavigateToObjectiveOptions,
   SprintMoveOptions,
 } from "./types";
 import {
@@ -68,9 +70,11 @@ export interface GameplayOrchestrator {
     options?: ChunkOptions,
   ): Promise<ChunkResult>;
   driveServo(options?: DriveServoOptions): Promise<ChunkResult>;
+  gtavDrive(options?: GtavDriveOptions): Promise<ChunkResult>;
   smartRescue(options?: ChunkOptions): Promise<ChunkResult>;
   coverPeekBurst(options?: CoverPeekBurstOptions): Promise<ChunkResult>;
   sprintMove(options?: SprintMoveOptions): Promise<ChunkResult>;
+  navigateToObjective(options?: NavigateToObjectiveOptions): Promise<ChunkResult>;
   autoCombatSweep(options?: AutoCombatSweepOptions): Promise<ChunkResult>;
   readGtavRadar(): GtavRadarReading | null;
   getRecentHistory(): ChunkHistoryEntry[];
@@ -390,6 +394,7 @@ export function createGameplayOrchestrator(
       throttleModulation = true,
       autoCornerBrake = true,
       steerBias = 0,
+      steerBiasFn,
       depthSteerHint,
       depthHintWeight = 0.3,
       stopOnBannerChange = false,
@@ -552,7 +557,9 @@ export function createGameplayOrchestrator(
           visualTarget = (1 - w) * visualTarget + w * clamp(depthSteerHint, -1, 1);
         }
 
-        const target = clamp(visualTarget + steerBias, -1, 1);
+        const dynamicBias =
+          typeof steerBiasFn === "function" ? steerBiasFn(surface) : 0;
+        const target = clamp(visualTarget + steerBias + dynamicBias, -1, 1);
         const pid = computePidSteer(
           target,
           pidState,
@@ -1076,6 +1083,7 @@ export function createGameplayOrchestrator(
       autoSpecialOnLowHealth = true,
       autoPan = true,
       panMs = 180,
+      stopWhenClear = true,
       unpause = false,
       pause = false,
       stopOnStuck = false,
@@ -1088,6 +1096,8 @@ export function createGameplayOrchestrator(
         const eng = getEngine();
         const surface = eng.findVideoSurface();
         let specialUsed = false;
+        let sawEnemies = false;
+        let clearStreak = 0;
         const startAt = performance.now();
 
         const triggerSpecial = async () => {
@@ -1113,6 +1123,15 @@ export function createGameplayOrchestrator(
             surface && typeof eng.readGtavRadar === "function"
               ? eng.readGtavRadar(surface)
               : null;
+          if (radar && radar.radarVisible) {
+            if (radar.enemyPixels > 0) {
+              sawEnemies = true;
+              clearStreak = 0;
+            } else if (stopWhenClear && sawEnemies) {
+              clearStreak++;
+              if (clearStreak >= 2) break;
+            }
+          }
           if (radar && radar.lowHealth) {
             if (autoSpecialOnLowHealth && !specialUsed) {
               await triggerSpecial();
@@ -1160,19 +1179,207 @@ export function createGameplayOrchestrator(
   }
 
   /**
+   * Closed-loop on-foot navigation toward the GTA V minimap objective blip
+   * (yellow/green/blue): continuously yaws camera toward objectiveAngleDeg,
+   * sprints forward, unsticks doorway snags via brief strafes, and stops early
+   * on arrival, enemy contact, or low health.
+   */
+  async function navigateToObjective(
+    options: NavigateToObjectiveOptions = {},
+  ): Promise<ChunkResult> {
+    const {
+      maxDurationMs = 5000,
+      tickMs = 65,
+      sprint = true,
+      sprintButton = BTN.A,
+      stopDist = 0.1,
+      stopOnEnemy = true,
+      enemyThreshold = 6,
+      stopOnLowHealth = true,
+      autoSpecialOnLowHealth = true,
+      endCover = false,
+      coverButton = BTN.RB,
+      yawGain = 1.0,
+      unstickStrafe = true,
+      unpause = false,
+      pause = false,
+      stopOnStuck = false,
+      label = "nav-objective",
+      ...rest
+    } = options;
+
+    let customStopReason = "";
+    const result = await runChunk(
+      async ({ api, shouldAbort }) => {
+        const eng = getEngine();
+        const surface = eng.findVideoSurface();
+        let specialUsed = false;
+        let lowMotionMs = 0;
+        let strafeDir = 1;
+        let strafeUntil = 0;
+        const startAt = performance.now();
+
+        const triggerSpecial = async () => {
+          specialUsed = true;
+          api.setButton(BTN.L3, 1);
+          api.setButton(BTN.R3, 1);
+          await api.sleep(90);
+          api.setButton(BTN.L3, 0);
+          api.setButton(BTN.R3, 0);
+          await api.sleep(40);
+        };
+
+        while (!shouldAbort()) {
+          const now = performance.now();
+          if (now - startAt >= maxDurationMs) {
+            customStopReason = "max_duration";
+            break;
+          }
+
+          const radar =
+            surface && typeof eng.readGtavRadar === "function"
+              ? eng.readGtavRadar(surface)
+              : null;
+
+          if (radar && radar.lowHealth) {
+            if (autoSpecialOnLowHealth && !specialUsed) {
+              await triggerSpecial();
+            } else if (stopOnLowHealth) {
+              customStopReason = "low_health";
+              break;
+            }
+          }
+
+          if (
+            stopOnEnemy &&
+            radar &&
+            radar.radarVisible &&
+            radar.enemyPixels >= enemyThreshold
+          ) {
+            customStopReason = "enemy_detected";
+            break;
+          }
+
+          if (
+            radar &&
+            radar.objectiveVisible &&
+            radar.objectiveDist !== null &&
+            radar.objectiveDist <= stopDist
+          ) {
+            customStopReason = "reached_objective";
+            break;
+          }
+
+          let yawX = 0;
+          let moveY = -1;
+          let moveX = 0;
+
+          if (
+            radar &&
+            radar.objectiveVisible &&
+            radar.objectiveAngleDeg !== null
+          ) {
+            const ang = radar.objectiveAngleDeg;
+            if (Math.abs(ang) > 6) {
+              yawX = clamp((ang / 65) * yawGain, -0.95, 0.95);
+            }
+            if (Math.abs(ang) > 105) {
+              // Turn camera first before sprinting forward into a wall
+              moveY = 0;
+            }
+          }
+
+          if (unstickStrafe && moveY < 0 && surface) {
+            const sample = eng.sampleAnalysis(surface);
+            if (sample.motionScore < 0.012 && now - startAt > 500) {
+              lowMotionMs += tickMs;
+            } else {
+              lowMotionMs = 0;
+            }
+            if (lowMotionMs >= 450 && now >= strafeUntil) {
+              strafeDir =
+                depthEngine?.isReady() && depthEngine.getLastResult()
+                  ? depthEngine.getLastResult()!.corridorOffsetX >= 0
+                    ? 1
+                    : -1
+                  : -strafeDir;
+              strafeUntil = now + 350;
+              lowMotionMs = 0;
+            }
+            if (now < strafeUntil) {
+              moveX = 0.85 * strafeDir;
+              moveY = -0.35;
+            }
+          }
+
+          api.setStick(1, yawX, 0);
+          api.setStick(0, moveX, moveY);
+          if (sprint && moveY < -0.2) {
+            api.setButton(sprintButton, 1);
+          } else if (sprint) {
+            api.setButton(sprintButton, 0);
+          }
+
+          await api.sleep(tickMs);
+        }
+
+        if (sprint) {
+          api.setButton(sprintButton, 0);
+        }
+        api.setStick(0, 0, 0);
+        api.setStick(1, 0, 0);
+        if (endCover) {
+          await api.tapButton(coverButton, 80, 120);
+        }
+      },
+      {
+        ...rest,
+        unpause,
+        pause,
+        stopOnStuck,
+        label,
+      },
+    );
+
+    if (customStopReason) {
+      return { ...result, stopReason: customStopReason };
+    }
+    return result;
+  }
+
+  /**
    * GTA V safe driving wrapper around driveServo: uses RT for gas (never Y,
-   * which exits the vehicle) and disables pause/unpause/race-finish hooks.
+   * which exits the vehicle), blends minimap GPS/objective steering bias when
+   * radar is visible, and disables pause/unpause/race-finish hooks.
    */
   async function gtavDrive(
-    options: DriveServoOptions = {},
+    options: GtavDriveOptions = {},
   ): Promise<ChunkResult> {
+    const {
+      useRadarGps = true,
+      radarGpsWeight = 0.35,
+      steerBiasFn,
+      ...rest
+    } = options;
+    const eng = getEngine();
+    const gpsBiasFn =
+      steerBiasFn ??
+      (useRadarGps
+        ? (surface: HTMLCanvasElement | HTMLVideoElement) => {
+            if (typeof eng.readGtavRadar !== "function") return 0;
+            const radar = eng.readGtavRadar(surface);
+            if (!radar || !radar.radarVisible) return 0;
+            return clamp(radar.gpsSteerBias * radarGpsWeight, -0.45, 0.45);
+          }
+        : undefined);
     return driveServo({
       gasButton: BTN.RT,
       unpause: false,
       pause: false,
       stopOnRaceFinish: false,
       label: "gtav-drive",
-      ...options,
+      steerBiasFn: gpsBiasFn,
+      ...rest,
     });
   }
 
@@ -1183,6 +1390,7 @@ export function createGameplayOrchestrator(
     smartRescue,
     coverPeekBurst,
     sprintMove,
+    navigateToObjective,
     autoCombatSweep,
     readGtavRadar,
     getRecentHistory,
