@@ -975,6 +975,28 @@ describe("vision & PID servo", () => {
     }
     expect(sawBtnA).toBe(false);
     expect(sawBtnStart).toBe(false);
+
+    // Snippet 6: Stick index string aliases ('left' | 'right') & invalid index guard (SKILL.md §2.1)
+    const dynApi = gWin.window.gameplayApi as unknown as {
+      setStick: (index: number | "left" | "right", x: number, y: number) => void;
+      pulseStick: (
+        index: number | "left" | "right",
+        x: number,
+        y: number,
+        holdMs?: number,
+        settleMs?: number,
+      ) => Promise<void>;
+      getState: typeof gp.getState;
+      resetAll: typeof gp.resetAll;
+    };
+    dynApi.setStick("left", 0.5, -0.25);
+    expect(dynApi.getState().axes[0]).toBeCloseTo(0.5, 4);
+    expect(dynApi.getState().axes[1]).toBeCloseTo(-0.25, 4);
+    dynApi.resetAll();
+    await dynApi.pulseStick("right", -0.6, 0.3, 5, 5);
+    expect(dynApi.getState().axes).toEqual([0, 0, 0, 0]);
+    expect(() => dynApi.setStick("invalid" as "left", 0, 0)).toThrow();
+    await expect(dynApi.pulseStick(1.5, 0, 0, 5, 5)).rejects.toThrow();
   });
 
   test("neutralizes stick and gas BEFORE pressing BTN.START pause (seg-40 regression)", async () => {
