@@ -31,3 +31,7 @@ Empirical notes and control bindings for playing unmodified *Grand Theft Auto V*
    - Always choose `Retry [A]` on `Mission Failed` screens rather than `Skip [X]`, so aiming/driving issues are diagnosed and fixed rather than bypassed.
 4. **Always `unpause: false, pause: false`**:
    - GTA V is a real-time 3D game; never let `runChunk` or `driveServo` press `BTN.A` before or `BTN.START` after every segment.
+5. **Cover-and-Peek Combat (`RB` + `LT`/`RT`)**:
+   - In heavy gunfights (e.g., 5-star Prologue shootout), stay in cover (`BTN.RB`) and use short `LT` (aim/snap) + `RT` bursts to clear nearby red minimap blips before advancing to the next cover point. Walking in the open while police vehicles are firing rapidly drains health.
+6. **Geometry Snags & Ally-Blip Orientation**:
+   - Narrow doorways, guard booths, and fence posts can snag forward movement (`Left Stick y: -1`). If `motionScore` drops or the character hugs a wall/post, rotate the camera (`Right Stick` `x`) toward the road or blue ally blips on the minimap before sprinting (`BTN.A` + `Left Stick y: -1`).
