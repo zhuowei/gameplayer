@@ -3340,6 +3340,7 @@ self.onmessage = async (ev) => {
     smartRescue: orchestrator.smartRescue,
     coverPeekBurst: orchestrator.coverPeekBurst,
     sprintMove: orchestrator.sprintMove,
+    navigateToObjective: orchestrator.navigateToObjective,
     autoCombatSweep: orchestrator.autoCombatSweep,
     readGtavRadar: orchestrator.readGtavRadar,
     getRecentHistory: orchestrator.getRecentHistory,
